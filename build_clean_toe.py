@@ -76,8 +76,7 @@ def onCook(scriptOp):
             scriptOp.par.resolutionh = out_h
             
         rgba = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGBA)
-        rgba_flipped = np.ascontiguousarray(np.flipud(rgba))
-        scriptOp.copyNumpyArray(rgba_flipped)
+        scriptOp.copyNumpyArray(np.ascontiguousarray(rgba[::-1]))
     except Exception as e:
         print('[StreamDiffusion] Error in script_receiver onCook:', e)
 '''
@@ -384,8 +383,8 @@ def onFrameStart(frame):
     if in_flight >= max_in_flight:
         return
 
-    # Throttle: Cap maximum transmission at ~45 FPS (~22ms)
-    min_interval = 0.022 if is_double else 0.033
+    # Dynamic frame interval ceiling (allows up to 80 FPS in double buffer, 60 FPS in single)
+    min_interval = 0.012 if is_double else 0.016
     if (now - last_send_time < min_interval):
         return
 
@@ -401,10 +400,11 @@ def onFrameStart(frame):
             img_bgr = (np.clip(arr[:, :, :3], 0.0, 1.0) * 255).astype(np.uint8)
             img_bgr = cv2.flip(img_bgr, 0)
             
-            # Downsample to 256x256 before JPEG compression
-            # Payload stays tiny (~5KB-8KB) while preserving full visual structures
-            img_small = cv2.resize(img_bgr, (256, 256), interpolation=cv2.INTER_AREA)
-            ret, buf = cv2.imencode('.jpg', img_small, [int(cv2.IMWRITE_JPEG_QUALITY), 55])
+            # If not already 256x256, downsample
+            if img_bgr.shape[0] != 256 or img_bgr.shape[1] != 256:
+                img_bgr = cv2.resize(img_bgr, (256, 256), interpolation=cv2.INTER_AREA)
+                
+            ret, buf = cv2.imencode('.jpg', img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
             if ret:
                 data = buf.tobytes()
                 
