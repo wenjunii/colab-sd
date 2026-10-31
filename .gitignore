@@ -1,0 +1,28 @@
+# TouchDesigner backups
+*.toe.bkp*
+*.tox.bkp*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+venv/
+env/
+
+# Scratch and test files
+test_*.py
+inspect_*.py
+test_project*
+StreamDiffusion_TouchDesigner*
+new_project_expanded/
+tox_contents/
+tox_strings.txt
+dump_strings.py
+run_collapse.py
+print_toc.py
+update_test_toc.py
+update_td.py
+StreamDiffusion_TD_Setup.py
+make_td_project.py

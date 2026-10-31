@@ -1,0 +1,7 @@
+?
+active 17 on parent().par.Connect
+netaddress 17 "" parent().par.Serverurl
+port 0 443
+callbacks 0 websocket1_callbacks
+language 0 text
+?

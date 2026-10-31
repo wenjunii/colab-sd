@@ -1,0 +1,11 @@
+?
+outputresolution 0 custom
+resolutionw 0 512
+resolutionh 0 512
+outputaspect 0 resolution
+period 0 2
+harmonics 0 3
+monochrome 0 off
+type 0 perlin
+tz 17 0 absTime.seconds*0.2
+?

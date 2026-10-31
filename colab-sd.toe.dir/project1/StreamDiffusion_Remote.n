@@ -1,0 +1,9 @@
+COMP:base
+tile 425 50 160 130
+flags =  picked on current on parlanguage 0
+inputs
+{
+0 	noise1
+}
+color 0.1 0.6 0.4 
+end

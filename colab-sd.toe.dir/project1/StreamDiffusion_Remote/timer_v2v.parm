@@ -1,0 +1,8 @@
+?
+length 0 0.04
+cycle 0 on
+cyclelimit 0 off
+callbacks 0 timer_callbacks
+timeslice 0 on
+exportmethod 0 datname
+?

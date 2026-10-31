@@ -1,0 +1,5 @@
+DAT:websocket
+tile -350 150 130 90
+flags =  current on parlanguage 0
+color 0.67 0.67 0.67 
+end

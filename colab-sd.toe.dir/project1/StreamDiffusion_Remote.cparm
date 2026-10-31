@@ -1,0 +1,12 @@
+?
+pages 1 StreamDiffusion
+772804868 Serverurl "Colab WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 0
+772804867 Connect "Connect to Colab" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
+772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 2
+772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 3
+772804868 Prompt Prompt 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4
+772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 5
+772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 6
+772804869 Sendprompt "Send Update" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
+772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
+?
