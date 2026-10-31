@@ -121,6 +121,7 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 | **Audio -> Denoise Gain** | Float (0.0–1.0) | `0.3` | Dynamic denoise strength boost proportional to audio peak amplitude. |
 | **Audio Beat Threshold** | Float (0.1–1.0) | `0.8` | Audio level threshold that triggers an automatic seed randomization on kick drum peaks. |
 | **Status** | String (Display) | `Disconnected` | Live connection status and streaming FPS. |
+| **Acceleration Engine** | String (Display) | `--` | Active backend reported from Colab (`PyTorch (FP16)` or `TensorRT (Turbo)`). |
 | **Effective FPS** | String (Display) | `0.0 FPS` | Measured video delivery rate received from Colab. |
 | **Colab Inference** | String (Display) | `-- ms` | Server-side GPU forward pass latency per frame. |
 | **Network Ping (RTT)**| String (Display) | `-- ms` | Round-trip network transmission time over WebSocket. |
