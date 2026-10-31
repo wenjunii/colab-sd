@@ -63,8 +63,12 @@ from fastapi.responses import HTMLResponse
 torch.set_grad_enabled(False)
 
 sys.path.append('.')
-from utils.wrapper import StreamDiffusionWrapper
-from streamdiffusion.image_utils import postprocess_image
+try:
+    from utils.wrapper import StreamDiffusionWrapper
+    from streamdiffusion.image_utils import postprocess_image
+except ImportError:
+    StreamDiffusionWrapper = None
+    postprocess_image = None
 
 # Patch image_utils.pt_to_numpy just in case
 try:
@@ -83,7 +87,13 @@ app = FastAPI()
 stream_txt2img = None
 stream_img2img = None
 pipeline_ready = False
-current_prompt = "cinematic cyberpunk cityscape, neon lights, 8k, detailed"
+
+# Prompt state
+current_prompt_a = "cinematic cyberpunk cityscape, neon lights, 8k, detailed"
+current_prompt_b = "bioluminescent alien jungle, glowing flora, ethereal, 8k"
+current_prompt_blend = 0.0
+current_neg_prompt = "blurry, low quality, distorted, watermark"
+
 current_mode = "txt2img"
 current_seed = 42
 current_strength = 0.6
@@ -93,23 +103,56 @@ def set_seed(s):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(s)
 
-def apply_prompt(new_prompt):
-    global current_prompt, stream_txt2img, stream_img2img
-    current_prompt = new_prompt
+def apply_prompts_and_blend(prompt_a, prompt_b="", blend=0.0, neg_prompt=""):
+    global current_prompt_a, current_prompt_b, current_prompt_blend, current_neg_prompt
+    if prompt_a is not None and str(prompt_a).strip():
+        current_prompt_a = str(prompt_a).strip()
+    if prompt_b is not None:
+        current_prompt_b = str(prompt_b).strip()
+    if blend is not None:
+        current_prompt_blend = max(0.0, min(1.0, float(blend)))
+    if neg_prompt is not None:
+        current_neg_prompt = str(neg_prompt).strip()
+
+    if not pipeline_ready or stream_txt2img is None:
+        return
+
     try:
-        if stream_txt2img is not None:
-            if hasattr(stream_txt2img, "update_prompt"):
-                stream_txt2img.update_prompt(new_prompt)
-            elif hasattr(stream_txt2img.stream, "update_prompt"):
-                stream_txt2img.stream.update_prompt(new_prompt)
-        if stream_img2img is not None:
-            if hasattr(stream_img2img, "update_prompt"):
-                stream_img2img.update_prompt(new_prompt)
-            elif hasattr(stream_img2img.stream, "update_prompt"):
-                stream_img2img.stream.update_prompt(new_prompt)
-        logger.info(f"Updated prompt to: {new_prompt}")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        core_pipe = stream_txt2img.stream.pipe
+
+        with torch.no_grad():
+            embed_a = core_pipe.encode_prompt(
+                prompt=current_prompt_a,
+                device=device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False,
+                negative_prompt=current_neg_prompt,
+            )[0]
+
+            if current_prompt_b and current_prompt_blend > 0.001:
+                embed_b = core_pipe.encode_prompt(
+                    prompt=current_prompt_b,
+                    device=device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=False,
+                    negative_prompt=current_neg_prompt,
+                )[0]
+                alpha = current_prompt_blend
+                blended = (1.0 - alpha) * embed_a + alpha * embed_b
+            else:
+                blended = embed_a
+
+            # Apply blended embedding tensor to both pipelines
+            for s in [stream_txt2img, stream_img2img]:
+                if s is not None:
+                    target = s.stream if hasattr(s, "stream") else s
+                    if hasattr(target, "prompt_embeds"):
+                        target.prompt_embeds = blended.repeat(target.batch_size, 1, 1)
+
+        logger.info(f"Prompts updated: A='{current_prompt_a[:25]}...', B='{current_prompt_b[:25]}...', blend={current_prompt_blend:.2f}")
     except Exception as e:
-        logger.error(f"Error updating prompt: {e}")
+        logger.error(f"Error in prompt blending: {traceback.format_exc()}")
 
 def apply_strength(new_strength):
     global current_strength, stream_img2img
@@ -121,10 +164,33 @@ def apply_strength(new_strength):
             elif hasattr(stream_img2img, "stream") and hasattr(stream_img2img.stream, "t_list"):
                 t0 = max(5, min(44, int(45 - current_strength * 40)))
                 stream_img2img.stream.t_list = [t0, 45]
-                stream_img2img.prepare(prompt=current_prompt, num_inference_steps=50)
+                stream_img2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
                 logger.info(f"Updated img2img denoise strength to {current_strength:.2f} (t_index_list={[t0, 45]})")
     except Exception as e:
         logger.error(f"Error updating strength: {e}")
+
+def get_gpu_telemetry():
+    vram_str = "--"
+    temp_str = "--"
+    if torch.cuda.is_available():
+        try:
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            pct = (allocated / total) * 100
+            vram_str = f"{allocated:.1f}/{total:.1f}GB ({pct:.0f}%)"
+        except Exception:
+            pass
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+                timeout=1,
+                text=True
+            ).strip()
+            temp_str = f"{out}°C"
+        except Exception:
+            pass
+    return vram_str, temp_str
 
 def run_model_inference(input_image=None):
     """
@@ -212,11 +278,9 @@ def load_pipeline():
                 new_t_list = [t0, 45]
                 if getattr(self.stream, "t_list", None) != new_t_list:
                     self.stream.t_list = new_t_list
-                    self.stream.prepare(prompt=current_prompt, num_inference_steps=50)
+                    self.stream.prepare(prompt=current_prompt_a, num_inference_steps=50)
                     logger.info(f"Updated img2img denoise strength to {strength:.2f} (t_index_list={new_t_list})")
             def __call__(self, image):
-                # When passed a PIL Image, stream(...) automatically preprocesses it
-                # without diffusers value-range warnings!
                 x_output = self.stream(image)
                 pil_out = postprocess_image(x_output, output_type="pil")
                 return pil_out[0] if isinstance(pil_out, list) else pil_out
@@ -242,8 +306,8 @@ def load_pipeline():
         )
 
     print(">>> Preparing both pipelines with initial prompt...")
-    stream_txt2img.prepare(prompt=current_prompt, num_inference_steps=50)
-    stream_img2img.prepare(prompt=current_prompt, num_inference_steps=50)
+    stream_txt2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
+    stream_img2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
 
     print(">>> Warming up models...")
     with torch.no_grad():
@@ -276,17 +340,23 @@ def index():
 
 @app.websocket("/ws/stream")
 async def websocket_stream_endpoint(websocket: WebSocket):
-    global current_prompt, current_mode, current_seed, current_strength
+    global current_prompt_a, current_prompt_b, current_prompt_blend, current_neg_prompt
+    global current_mode, current_seed, current_strength
     await websocket.accept()
     logger.info("TouchDesigner client connected to WebSocket.")
 
+    vram_s, temp_s = get_gpu_telemetry()
     await websocket.send_text(json.dumps({
         "type": "welcome",
         "message": "StreamDiffusion server connected",
-        "prompt": current_prompt,
+        "prompt_a": current_prompt_a,
+        "prompt_b": current_prompt_b,
+        "blend": current_prompt_blend,
         "mode": current_mode,
         "seed": current_seed,
         "strength": current_strength,
+        "vram": vram_s,
+        "temp": temp_s,
     }))
 
     CHUNK_SIZE = 2048
@@ -324,7 +394,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     t0 = time.time()
                     output_tensor = await loop.run_in_executor(None, run_model_inference)
                     inf_ms = (time.time() - t0) * 1000
-                    
+
                     if output_tensor is not None:
                         if isinstance(output_tensor, Image.Image):
                             arr_bgr = cv2.cvtColor(np.array(output_tensor), cv2.COLOR_RGB2BGR)
@@ -336,19 +406,22 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 
                         jpg_bytes = compress_frame(arr_bgr)
                         await send_chunked_frame(websocket, jpg_bytes)
-                        
+
                         frame_count += 1
                         if frame_count % 10 == 0:
                             try:
+                                v_str, t_str = get_gpu_telemetry()
                                 await websocket.send_text(json.dumps({
                                     "type": "stats",
                                     "inf_ms": round(inf_ms, 1),
+                                    "vram": v_str,
+                                    "temp": t_str,
                                     "mode": current_mode,
                                     "strength": current_strength
                                 }))
                             except Exception:
                                 pass
-                                
+
                         if frame_count % 25 == 1:
                             logger.info(f"StreamDiffusion active: frame #{frame_count} ({inf_ms:.1f}ms, {len(jpg_bytes)} bytes)")
                 except Exception as e:
@@ -373,14 +446,17 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     data = json.loads(message["text"])
                     msg_type = data.get("type", "")
 
-                    if msg_type == "control" or "prompt" in data or "mode" in data or "seed" in data or "strength" in data:
-                        new_prompt = data.get("prompt")
+                    if msg_type == "control" or "prompt" in data or "mode" in data or "seed" in data or "strength" in data or "blend" in data:
+                        p_a = data.get("prompt_a") or data.get("prompt")
+                        p_b = data.get("prompt_b", "")
+                        blend_val = data.get("blend", 0.0)
+                        neg = data.get("neg_prompt", "")
+
                         new_mode = data.get("mode")
                         new_seed = data.get("seed")
                         new_strength = data.get("strength")
 
-                        if new_prompt is not None and (new_prompt != current_prompt or data.get("force", False)):
-                            apply_prompt(new_prompt)
+                        apply_prompts_and_blend(p_a, p_b, blend_val, neg)
 
                         if new_mode is not None:
                             mode_str = str(new_mode).lower()
@@ -410,8 +486,6 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     raw = message["bytes"]
                     try:
                         frame_bytes = None
-                        # Reassemble chunked frames from TouchDesigner:
-                        # Header: b"FRM:" + frame_id + chunk_idx + total_chunks (7 bytes)
                         if raw.startswith(b"FRM:") and len(raw) >= 7:
                             frame_id = raw[4]
                             chunk_idx = raw[5]
@@ -459,9 +533,12 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                 img2img_counter += 1
                                 if img2img_counter % 10 == 0:
                                     try:
+                                        v_str, t_str = get_gpu_telemetry()
                                         await websocket.send_text(json.dumps({
                                             "type": "stats",
                                             "inf_ms": round(inf_ms, 1),
+                                            "vram": v_str,
+                                            "temp": t_str,
                                             "mode": current_mode,
                                             "strength": current_strength
                                         }))

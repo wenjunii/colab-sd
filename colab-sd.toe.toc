@@ -91,3 +91,5 @@ project1/StreamDiffusion_Remote/switch_in.parm
 project1/StreamDiffusion_Remote/exec_send_frame.n
 project1/StreamDiffusion_Remote/exec_send_frame.parm
 project1/StreamDiffusion_Remote/exec_send_frame.text
+project1/StreamDiffusion_Remote/in_audio.n
+project1/StreamDiffusion_Remote/in_audio.parm
