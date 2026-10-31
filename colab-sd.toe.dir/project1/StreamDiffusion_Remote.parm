@@ -2,11 +2,24 @@
 pageindex 0 3
 Serverurl 67108928 wss://samples-null-chance-beverage.trycloudflare.com/ws/stream
 Connect 67108928 off
-Prompt 67108928 "cyberpunk cat, neon lights, 8k, detailed"
+Mode 67108928 txt2img
+Source 67108928 in1
+Displaymode 67108928 ai
+Prompta 67108928 "cinematic cyberpunk cityscape, neon lights, 8k, detailed"
+Promptb 67108928 "bioluminescent alien jungle, glowing flora, ethereal, 8k"
+Promptblend 67108928 0.0
+Negprompt 67108928 "blurry, low quality, distorted, watermark"
 Strength 67108928 0.6
 Seed 67108928 42
+Snapdir 67108928 captures
+Audiorx 67108928 off
+Audiochop 67108928 in_audio
+Audstrength 67108928 0.3
+Audseedthresh 67108928 0.8
 Status 67109184 Disconnected
 Fps 67109184 "0.0 FPS"
 Gputime 67109184 "-- ms"
 Ping 67109184 "-- ms"
+Vram 67109184 "--"
+Gputemp 67109184 "--"
 ?
