@@ -61,6 +61,10 @@ from fastapi.responses import HTMLResponse
 
 # Disable autograd globally for fast inference
 torch.set_grad_enabled(False)
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
 
 sys.path.append('.')
 try:
@@ -101,6 +105,49 @@ current_neg_prompt = "blurry, low quality, distorted, watermark"
 current_mode = "txt2img"
 current_seed = 42
 current_strength = 0.6
+current_steps = 2
+
+def get_t_list_for_steps(steps, mode="txt2img", strength=0.6):
+    s = int(steps)
+    if mode == "txt2img":
+        if s == 1:
+            return [45]
+        elif s == 4:
+            return [0, 16, 32, 45]
+        else: # 2 steps (balanced default)
+            return [32, 45]
+    else: # img2img
+        t0 = max(5, min(44, int(45 - strength * 40)))
+        if s == 1:
+            return [t0]
+        elif s == 4:
+            t1 = int(t0 + (45 - t0) * 0.33)
+            t2 = int(t0 + (45 - t0) * 0.66)
+            return [t0, t1, t2, 45]
+        else: # 2 steps
+            return [t0, 45]
+
+def apply_steps(new_steps):
+    global current_steps, stream_txt2img, stream_img2img
+    try:
+        s = int(new_steps)
+        if s not in (1, 2, 4):
+            s = 2
+        current_steps = s
+        
+        t_list_txt = get_t_list_for_steps(current_steps, "txt2img")
+        if stream_txt2img is not None and hasattr(stream_txt2img, "stream"):
+            stream_txt2img.stream.t_list = t_list_txt
+            stream_txt2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
+            
+        t_list_img = get_t_list_for_steps(current_steps, "img2img", current_strength)
+        if stream_img2img is not None and hasattr(stream_img2img, "stream"):
+            stream_img2img.stream.t_list = t_list_img
+            stream_img2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
+            
+        logger.info(f"Updated diffusion steps to {current_steps}: txt2img={t_list_txt}, img2img={t_list_img}")
+    except Exception as e:
+        logger.error(f"Error applying steps: {e}")
 
 def set_seed(s):
     torch.manual_seed(s)
@@ -166,10 +213,10 @@ def apply_strength(new_strength):
             if hasattr(stream_img2img, "update_strength"):
                 stream_img2img.update_strength(current_strength)
             elif hasattr(stream_img2img, "stream") and hasattr(stream_img2img.stream, "t_list"):
-                t0 = max(5, min(44, int(45 - current_strength * 40)))
-                stream_img2img.stream.t_list = [t0, 45]
+                new_t_list = get_t_list_for_steps(current_steps, "img2img", current_strength)
+                stream_img2img.stream.t_list = new_t_list
                 stream_img2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
-                logger.info(f"Updated img2img denoise strength to {current_strength:.2f} (t_index_list={[t0, 45]})")
+                logger.info(f"Updated img2img denoise strength to {current_strength:.2f} (t_index_list={new_t_list})")
     except Exception as e:
         logger.error(f"Error updating strength: {e}")
 
@@ -210,20 +257,16 @@ def run_model_inference(input_image=None):
 
 def compress_frame(arr_bgr, max_bytes=48000):
     """
-    Dynamically compresses JPEG to guarantee payload stays strictly under TouchDesigner's
-    64KB WebSocket limit (typically around 25KB-42KB).
+    Fast single-pass JPEG compression at Q55 (typically 22KB-35KB for 512x512).
+    Avoids multi-pass CPU overhead.
     """
-    for q in (60, 50, 40, 30):
-        ret, buf = cv2.imencode('.jpg', arr_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), q])
-        if ret and len(buf) <= max_bytes:
-            return buf.tobytes()
+    ret, buf = cv2.imencode('.jpg', arr_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 55])
+    if ret and len(buf) <= max_bytes:
+        return buf.tobytes()
     h, w = arr_bgr.shape[:2]
     small = cv2.resize(arr_bgr, (int(w * 0.8), int(h * 0.8)), interpolation=cv2.INTER_AREA)
-    for q in (45, 30, 20):
-        ret, buf = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), q])
-        if ret and len(buf) <= max_bytes:
-            return buf.tobytes()
-    return buf.tobytes()
+    ret, buf = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
+    return buf.tobytes() if ret else b""
 
 def load_pipeline():
     global stream_txt2img, stream_img2img, pipeline_ready, active_engine
@@ -231,12 +274,13 @@ def load_pipeline():
     accel_mode = "tensorrt" if enable_tensorrt else "none"
     print(f">>> Initializing StreamDiffusion (SD-Turbo) on {device.upper()} with acceleration='{accel_mode}' (Engine: {active_engine})...")
 
-    # 1. Text-to-Image pipeline: [0, 16, 32, 45] produces full, coherent, prompt-matching frames
-    print(">>> Initializing Text-to-Image pipeline (t_index_list=[0, 16, 32, 45])...")
+    # 1. Text-to-Image pipeline: dynamic t_index_list based on current_steps
+    t_init_txt = get_t_list_for_steps(current_steps, "txt2img")
+    print(f">>> Initializing Text-to-Image pipeline (t_index_list={t_init_txt}, steps={current_steps})...")
     try:
         stream_txt2img = StreamDiffusionWrapper(
             model_id_or_path="stabilityai/sd-turbo",
-            t_index_list=[0, 16, 32, 45],
+            t_index_list=t_init_txt,
             frame_buffer_size=1,
             width=512,
             height=512,
@@ -258,7 +302,7 @@ def load_pipeline():
             active_engine = "PyTorch (FP16)"
             stream_txt2img = StreamDiffusionWrapper(
                 model_id_or_path="stabilityai/sd-turbo",
-                t_index_list=[0, 16, 32, 45],
+                t_index_list=t_init_txt,
                 frame_buffer_size=1,
                 width=512,
                 height=512,
@@ -276,15 +320,27 @@ def load_pipeline():
             raise
     set_seed(current_seed)
 
-    # 2. Image-to-Image / StreamV2V pipeline: initial t_index_list based on current_strength
-    t0_init = max(5, min(44, int(45 - current_strength * 40)))
-    print(f">>> Initializing Image-to-Image / StreamV2V pipeline (t_index_list=[{t0_init}, 45], strength={current_strength:.2f})...")
+    # Enable Tensor Core channels_last memory format optimization
+    if device == "cuda" and stream_txt2img is not None and hasattr(stream_txt2img, "stream"):
+        try:
+            core_pipe = stream_txt2img.stream.pipe
+            if hasattr(core_pipe, "unet"):
+                core_pipe.unet.to(memory_format=torch.channels_last)
+            if hasattr(core_pipe, "vae") and core_pipe.vae:
+                core_pipe.vae.to(memory_format=torch.channels_last)
+            logger.info("Activated channels_last memory format for Tensor Core acceleration.")
+        except Exception:
+            pass
+
+    # 2. Image-to-Image / StreamV2V pipeline: initial t_index_list based on current_steps and strength
+    t_init_img = get_t_list_for_steps(current_steps, "img2img", current_strength)
+    print(f">>> Initializing Image-to-Image / StreamV2V pipeline (t_index_list={t_init_img}, strength={current_strength:.2f})...")
     try:
         from streamdiffusion import StreamDiffusion
         core_pipe = stream_txt2img.stream.pipe
         stream_core = StreamDiffusion(
             pipe=core_pipe,
-            t_index_list=[t0_init, 45],
+            t_index_list=t_init_img,
             torch_dtype=core_pipe.dtype,
             width=512,
             height=512,
@@ -303,9 +359,7 @@ def load_pipeline():
             def update_prompt(self, prompt):
                 self.stream.update_prompt(prompt)
             def update_strength(self, strength: float):
-                # Dynamically maps strength [0.1..1.0] to start timestep index [44..5]
-                t0 = max(5, min(44, int(45 - strength * 40)))
-                new_t_list = [t0, 45]
+                new_t_list = get_t_list_for_steps(current_steps, "img2img", strength)
                 if getattr(self.stream, "t_list", None) != new_t_list:
                     self.stream.t_list = new_t_list
                     self.stream.prepare(prompt=current_prompt_a, num_inference_steps=50)
@@ -380,6 +434,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         "type": "welcome",
         "message": "StreamDiffusion server connected",
         "engine": active_engine,
+        "steps": current_steps,
         "prompt_a": current_prompt_a,
         "prompt_b": current_prompt_b,
         "blend": current_prompt_blend,
@@ -390,7 +445,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         "temp": temp_s,
     }))
 
-    CHUNK_SIZE = 2048
+    CHUNK_SIZE = 8192
     frame_counter = 0
 
     async def send_chunked_frame(ws: WebSocket, jpg_bytes: bytes):
@@ -445,6 +500,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                 await websocket.send_text(json.dumps({
                                     "type": "stats",
                                     "engine": active_engine,
+                                    "steps": current_steps,
                                     "inf_ms": round(inf_ms, 1),
                                     "vram": v_str,
                                     "temp": t_str,
@@ -506,6 +562,10 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 
                         if new_strength is not None and abs(float(new_strength) - current_strength) > 0.01:
                             apply_strength(float(new_strength))
+
+                        new_steps = data.get("steps")
+                        if new_steps is not None and int(new_steps) != current_steps:
+                            apply_steps(new_steps)
 
                     elif msg_type == "ping":
                         await websocket.send_text(json.dumps({"type": "pong", "time": time.time()}))
@@ -569,6 +629,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                         await websocket.send_text(json.dumps({
                                             "type": "stats",
                                             "engine": active_engine,
+                                            "steps": current_steps,
                                             "inf_ms": round(inf_ms, 1),
                                             "vram": v_str,
                                             "temp": t_str,
