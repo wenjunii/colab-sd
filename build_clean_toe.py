@@ -60,20 +60,27 @@ last_fps_time = time.time()
 fps_frame_count = 0
 
 def onConnect(dat):
-    parent().par.Status = 'Connected (Streaming)'
+    p_status = getattr(parent().par, 'Status', None)
+    if p_status is not None:
+        p_status.val = 'Connected (Streaming)'
     parent().store('can_send', True)
     print('[StreamDiffusion] WebSocket Connected to Colab!')
     send_control(force=True)
 
 def onDisconnect(dat):
-    parent().par.Status = 'Disconnected'
+    p_status = getattr(parent().par, 'Status', None)
+    if p_status is not None:
+        p_status.val = 'Disconnected'
+    p_fps = getattr(parent().par, 'Fps', None)
+    if p_fps is not None:
+        p_fps.val = '0.0 FPS'
+    p_gpu = getattr(parent().par, 'Gputime', None)
+    if p_gpu is not None:
+        p_gpu.val = '-- ms'
+    p_ping = getattr(parent().par, 'Ping', None)
+    if p_ping is not None:
+        p_ping.val = '-- ms'
     parent().store('can_send', True)
-    if hasattr(parent().par, 'Fps'):
-        parent().par.Fps = '0.0 FPS'
-    if hasattr(parent().par, 'Gputime'):
-        parent().par.Gputime = '-- ms'
-    if hasattr(parent().par, 'Ping'):
-        parent().par.Ping = '-- ms'
     print('[StreamDiffusion] WebSocket Disconnected.')
     global current_frame_id, frame_chunks
     current_frame_id = -1
@@ -83,10 +90,14 @@ def onReceiveText(dat, rowIndex, message):
     try:
         data = json.loads(message)
         if 'status' in data:
-            parent().par.Status = data['status']
-        if 'inf_ms' in data and hasattr(parent().par, 'Gputime'):
-            parent().par.Gputime = f"{data['inf_ms']:.1f} ms"
-    except:
+            p_status = getattr(parent().par, 'Status', None)
+            if p_status is not None:
+                p_status.val = data['status']
+        if 'inf_ms' in data:
+            p_gpu = getattr(parent().par, 'Gputime', None)
+            if p_gpu is not None:
+                p_gpu.val = f"{data['inf_ms']:.1f} ms"
+    except Exception:
         pass
 
 def onReceiveBinary(dat, contents):
@@ -125,17 +136,22 @@ def onReceiveBinary(dat, contents):
         now = time.time()
         # Telemetry: Network Ping (Round-Trip Time)
         last_send_time = parent().fetch('last_send_time', 0.0)
-        if last_send_time > 0 and hasattr(parent().par, 'Ping'):
+        if last_send_time > 0:
             rtt = (now - last_send_time) * 1000.0
-            parent().par.Ping = f"{rtt:.1f} ms"
+            p_ping = getattr(parent().par, 'Ping', None)
+            if p_ping is not None:
+                p_ping.val = f"{rtt:.1f} ms"
             
         # Telemetry: Effective FPS
         elapsed = now - last_fps_time
         if elapsed >= 1.0:
             current_fps = fps_frame_count / elapsed
-            if hasattr(parent().par, 'Fps'):
-                parent().par.Fps = f"{current_fps:.1f} FPS"
-            parent().par.Status = f"Connected ({current_fps:.1f} FPS)"
+            p_fps = getattr(parent().par, 'Fps', None)
+            if p_fps is not None:
+                p_fps.val = f"{current_fps:.1f} FPS"
+            p_status = getattr(parent().par, 'Status', None)
+            if p_status is not None:
+                p_status.val = f"Connected ({current_fps:.1f} FPS)"
             last_fps_time = now
             fps_frame_count = 0
         
@@ -147,15 +163,16 @@ def onReceiveBinary(dat, contents):
 
 def send_control(force=False):
     p = parent().par
-    mode = 'img2img' if p.Mode.eval() == 'img2img' else 'txt2img'
-    prompt_val = str(p.Prompt.eval() or '')
-    strength_val = float(p.Strength.eval()) if hasattr(p, 'Strength') else 0.6
+    mode = 'img2img' if getattr(p, 'Mode', None) and p.Mode.eval() == 'img2img' else 'txt2img'
+    prompt_val = str(p.Prompt.eval()) if getattr(p, 'Prompt', None) else ''
+    strength_val = float(p.Strength.eval()) if getattr(p, 'Strength', None) else 0.6
+    seed_val = int(p.Seed.eval()) if getattr(p, 'Seed', None) else 42
     msg = {
         'type': 'control',
         'mode': mode,
         'prompt': prompt_val,
         'strength': strength_val,
-        'seed': int(p.Seed.eval()),
+        'seed': seed_val,
         'force': force,
         'width': 512,
         'height': 512,
@@ -164,7 +181,7 @@ def send_control(force=False):
     if ws and ws.par.active.eval():
         try:
             ws.sendText(json.dumps(msg))
-            print(f"[StreamDiffusion] Sent control: mode={mode}, strength={strength_val:.2f}, prompt='{prompt_val}'")
+            print(f"[StreamDiffusion] Sent control: mode={mode}, prompt='{prompt_val}', strength={strength_val:.2f}, seed={seed_val}")
         except Exception as e:
             print('[StreamDiffusion] Error sending control:', e)
     else:
@@ -194,7 +211,8 @@ def onFrameStart(frame):
     global frame_count, frame_id_seq
     
     # Only active when in img2img mode
-    if parent().par.Mode.eval() != 'img2img':
+    mode_par = getattr(parent().par, 'Mode', None)
+    if not mode_par or mode_par.eval() != 'img2img':
         return
         
     ws = op('websocket1')
@@ -279,25 +297,35 @@ PAREXEC_CODE = '''import random
 # prev - the previous value
 
 def onValueChange(par, prev):
-    if par.name in ['Prompt', 'Mode', 'Source', 'Strength', 'Seed']:
-        for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
-            cb = op(name)
-            if cb and hasattr(cb.module, 'send_control'):
-                cb.module.send_control(force=True)
-                break
-    elif par.name == 'Connect':
-        if not par.eval():
-            parent().par.Status = 'Disconnected'
+    try:
+        if par.name in ['Prompt', 'Mode', 'Source', 'Strength', 'Seed']:
+            for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
+                cb = op(name)
+                if cb and hasattr(cb.module, 'send_control'):
+                    cb.module.send_control(force=True)
+                    break
+        elif par.name == 'Connect':
+            if not par.eval():
+                p_status = getattr(parent().par, 'Status', None)
+                if p_status is not None:
+                    p_status.val = 'Disconnected'
+    except Exception as e:
+        print('[StreamDiffusion] parexec onValueChange error:', e)
 
 def onPulse(par):
-    if par.name == 'Randomseed':
-        parent().par.Seed = random.randint(1, 999999)
-    elif par.name == 'Sendprompt':
-        for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
-            cb = op(name)
-            if cb and hasattr(cb.module, 'send_control'):
-                cb.module.send_control(force=True)
-                break
+    try:
+        if par.name == 'Randomseed':
+            p_seed = getattr(parent().par, 'Seed', None)
+            if p_seed is not None:
+                p_seed.val = random.randint(1, 999999)
+        elif par.name in ['Sendprompt', 'Submitprompt']:
+            for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
+                cb = op(name)
+                if cb and hasattr(cb.module, 'send_control'):
+                    cb.module.send_control(force=True)
+                    break
+    except Exception as e:
+        print('[StreamDiffusion] parexec onPulse error:', e)
 '''
 
 CPARM_CONTENT = '''?
@@ -307,10 +335,10 @@ pages 1 StreamDiffusion
 772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 2
 772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 3
 772804868 Prompt Prompt 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4
-772804865 Strength "Denoise Strength" 1 1 0.1 1.0 0.1 1.0 0.6 2 0 "" "" StreamDiffusion 5
-772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 6
-772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
-772804869 Sendprompt "Send Update" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
+772804869 Sendprompt "Submit Prompt" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 5
+772804865 Strength "Denoise Strength" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 6
+772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
+772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
 772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
 772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
 772804868 Gputime "Colab GPU Time" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
@@ -359,7 +387,7 @@ def build_toe_and_tox():
     with open(os.path.join(proj_dir, 'StreamDiffusion_Remote.parm'), 'w', newline='\n') as f:
         f.write(PARM_CONTENT)
         
-    # 2. Update parexec_controls.parm to monitor Strength
+    # 2. Update parexec_controls.parm to monitor all control parameters
     parexec_parm = (
         "?\n"
         "fromop 201326609 \"\" parent()\n"
