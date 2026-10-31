@@ -3,27 +3,29 @@ pages 1 StreamDiffusion
 772804868 Serverurl "Colab WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 0
 772804867 Connect "Connect to Colab" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
 772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 2
-772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 3
-772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 4
-772804868 Prompta "Prompt A" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 5
-772804868 Promptb "Prompt B" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 6
-772804865 Promptblend "Prompt Blend (A <-> B)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
-772804868 Negprompt "Negative Prompt" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
-772804869 Submitprompt "Submit Prompts" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
-772804865 Strength "Denoise Strength" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
-772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
-772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 12
-772804869 Snapshot "Take Snapshot (PNG+JSON)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 13
-772804868 Snapdir "Snapshot Directory" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 14
-772804867 Audiorx "Audio Reactivity" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 15
-772804868 Audiochop "Audio CHOP Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 16
-772804865 Audstrength "Audio -> Denoise Gain" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 17
-772804865 Audseedthresh "Audio Beat Seed Threshold" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 18
-772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 19
-772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
-772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
-772804868 Gputime "Colab Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
-772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
-772804868 Vram "Colab GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
-772804868 Gputemp "Colab GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
+772804879 Steps "Diffusion Steps" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 1 "1 Step (Ultra Turbo ~35-50 FPS)" 2 "2 Steps (Balanced ~25 FPS)" 4 "4 Steps (High Quality ~14 FPS)" 3
+772804879 Flowmode "Flow Control" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 double "Double Buffered (High FPS)" single "Single Token (Strict Latency)" 4
+772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 5
+772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 6
+772804868 Prompta "Prompt A" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
+772804868 Promptb "Prompt B" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
+772804865 Promptblend "Prompt Blend (A <-> B)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
+772804868 Negprompt "Negative Prompt" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
+772804869 Submitprompt "Submit Prompts" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
+772804865 Strength "Denoise Strength" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 12
+772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 13
+772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 14
+772804869 Snapshot "Take Snapshot (PNG+JSON)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 15
+772804868 Snapdir "Snapshot Directory" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 16
+772804867 Audiorx "Audio Reactivity" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 17
+772804868 Audiochop "Audio CHOP Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 18
+772804865 Audstrength "Audio -> Denoise Gain" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 19
+772804865 Audseedthresh "Audio Beat Seed Threshold" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
+772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
+772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
+772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
+772804868 Gputime "Colab Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
+772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
+772804868 Vram "Colab GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
+772804868 Gputemp "Colab GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 27
 ?
