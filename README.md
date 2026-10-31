@@ -43,7 +43,7 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 ```mermaid
 flowchart LR
     subgraph TD["🖥️ Local TouchDesigner"]
-        IN["Input TOP\n(Webcam / Noise / Movie)"] --> FIT["fit512 (256x256)"]
+        IN["Input TOP\n(Webcam / Noise / Movie)"] --> FIT["fit512 (512x512)"]
         CHOP["Audio CHOP\n(Kick / Level)"] --> EXEC["exec_send_frame\n(Flow Control & Audio Rx)"]
         FIT --> EXEC
         EXEC -.->|"ws.sendBinary(FRM: <=4KB)"| WS_DAT["WebSocket DAT"]
@@ -70,11 +70,14 @@ flowchart LR
 
 ### 1. Launch Server on Google Colab
 
-1. Open [Google Colab](https://colab.research.google.com/) and upload `StreamDiffusion_Colab_Server.ipynb` (or open it from Google Drive).
+1. Open [Google Colab](https://colab.research.google.com/) and upload `StreamDiffusion_Colab_Server.ipynb` (or open it from Google Drive / clone this repo).
 2. Ensure GPU runtime is active:
    * **Runtime** $\rightarrow$ **Change runtime type** $\rightarrow$ **Hardware accelerator: GPU** (Select **T4**, **L4**, or **A100**).
-3. Click **Runtime** $\rightarrow$ **Run all** (or execute cells 1 through 4 sequentially).
-4. Cell 4 will download SD-Turbo weights (~2.5GB), warm up the pipeline, start the server, and print your unique WebSocket URL:
+3. Execute cells 1 through 3.
+4. In **Cell 4 (Launch Server)**, configure the **1-Toggle Acceleration Switch**:
+   * **`ENABLE_TENSORRT = False` (Default):** Fast 35-second startup using PyTorch Native FP16 (~60–75ms inference).
+   * **`ENABLE_TENSORRT = True`:** TensorRT Turbo mode (~25–35ms inference; compiles engine on first run in ~10–12 min).
+5. Run Cell 4. The server downloads SD-Turbo weights (~2.5GB), completes GPU warmup, and displays your live WebSocket endpoint:
    ```text
    🚀 StreamDiffusion Server is READY & STREAMING!
    Copy this URL and paste it into TouchDesigner:
@@ -167,6 +170,15 @@ To solve this, a custom chunking protocol operates in both directions:
   $$\text{b'FRM:'} \; (4\text{ bytes}) + \text{frame\_id} \; (1\text{ byte}) + \text{chunk\_idx} \; (1\text{ byte}) + \text{total\_chunks} \; (1\text{ byte})$$
 * **Colab $\rightarrow$ TouchDesigner (Output Stream):** Output frames ($512\times 512$) are sliced into 2048-byte chunks with a 3-byte header:
   $$\text{frame\_counter} \; (1\text{ byte}) + \text{chunk\_idx} \; (1\text{ byte}) + \text{total\_chunks} \; (1\text{ byte})$$
+
+---
+
+## 💡 Tips & Troubleshooting
+
+* **Reloading the Component in TouchDesigner:** If you make changes or pull an update while TouchDesigner is running, select **File $\rightarrow$ Revert to Saved**, or drag and drop `StreamDiffusion_Remote.tox` into your project. TouchDesigner does not reload `.toe` files from disk automatically while open.
+* **Checking Engine Status:** Watch the **`Acceleration Engine`** readout in TouchDesigner. When connected to Colab, it dynamically confirms whether `PyTorch (FP16)` or `TensorRT (Turbo)` is powering the inference.
+* **Automatic Watchdog Recovery:** The TouchDesigner pipeline includes a 250ms watchdog timeout. If a network packet is dropped or Cloudflare fluctuates, the transmitter resets immediately so interactive streaming never hangs.
+* **Audio Reactivity:** Wire any CHOP into the `in_audio` connector on the `StreamDiffusion_Remote` component (or specify an external CHOP path like `op('/project1/audio_analysis')`). Enable the **Audio Reactivity** toggle to modulate denoise strength and automatically randomize seeds on beat transients.
 
 ---
 

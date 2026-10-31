@@ -61,6 +61,10 @@ from fastapi.responses import HTMLResponse
 
 # Disable autograd globally for fast inference
 torch.set_grad_enabled(False)
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
 
 sys.path.append('.')
 try:
