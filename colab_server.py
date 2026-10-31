@@ -322,7 +322,7 @@ def apply_controls(data):
         last_pipeline_error = None
     except Exception as exc:
         globals().update(previous)
-        last_pipeline_error = str(exc)
+        last_pipeline_error = "Configuration failed; see Colab server logs"
         # A failed constructor can retain tensors in its traceback. Release
         # those frames before attempting to allocate the old model buffers.
         exc.__traceback__ = None
@@ -578,6 +578,19 @@ def health():
         "last_error": last_pipeline_error,
     }, status_code=200 if pipeline_ready else 503)
 
+
+def configuration_error(code):
+    """Public status contains no internal exception text or stack information."""
+    if code == "invalid_control":
+        status = "Invalid controls: check output preset, mode, seed, strength, and blend values"
+    elif pipeline_ready:
+        status = "Configuration failed; previous settings restored. See Colab logs for details"
+    else:
+        status = "Configuration failed; see Colab logs, then retry or restart the server"
+    return {"type": "error", "code": code, "status": status,
+            "ready": pipeline_ready, "mode": current_mode,
+            "width": output_width, "height": output_height}
+
 @app.websocket("/ws/stream")
 async def websocket_stream_endpoint(websocket: WebSocket):
     global active_client
@@ -656,11 +669,12 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     pending_frame = None
                     frame_available.clear()
                     assembler.clear()
-            except Exception as exc:
+            except ValueError:
+                logger.exception("Invalid control message")
+                await send_json(configuration_error("invalid_control"))
+            except Exception:
                 logger.exception("Error applying control message")
-                await send_json({"type": "error", "code": "configuration_failed", "status": str(exc)[:512],
-                                 "ready": pipeline_ready, "mode": current_mode,
-                                 "width": output_width, "height": output_height})
+                await send_json(configuration_error("configuration_failed"))
 
     async def generation_loop(mode):
         nonlocal pending_frame

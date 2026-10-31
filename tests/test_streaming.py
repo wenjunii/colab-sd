@@ -94,7 +94,7 @@ class ServerChecks(unittest.TestCase):
                 server.apply_controls({'width': 1024, 'height': 768})
         self.assertFalse(server.pipeline_ready)
         self.assertEqual(server.health().status_code, 503)
-        self.assertIn('allocation failed', json.loads(server.health().body)['last_error'])
+        self.assertEqual(json.loads(server.health().body)['last_error'], 'Configuration failed; see Colab server logs')
 
     def test_engine_readout_follows_the_current_mode(self):
         with patch.multiple(server, active_engine='TensorRT (Turbo)', img2img_engine='PyTorch + TensorRT VAE'):
@@ -205,6 +205,26 @@ async def until(predicate, timeout=2.0):
 
 
 class WebSocketChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_backend_exception_details_stay_out_of_public_status(self):
+        ws = FakeWebSocket()
+        private_detail = 'internal/private/server/path: backend allocation failed'
+        with patch.multiple(server, pipeline_ready=True, current_mode='img2img'), \
+                patch.object(server, 'apply_controls', side_effect=RuntimeError(private_detail)), \
+                patch.object(server, 'get_gpu_telemetry', return_value=('--', '--')):
+            task = asyncio.create_task(server.websocket_stream_endpoint(ws))
+            try:
+                await until(lambda: ws.text)
+                with self.assertLogs(server.logger, level='ERROR') as logs:
+                    await ws.incoming.put({'text': json.dumps({'type': 'control', 'seed': 42})})
+                    await until(lambda: any(message.get('code') == 'configuration_failed' for message in ws.text))
+                error = next(message for message in ws.text if message.get('code') == 'configuration_failed')
+                self.assertNotIn(private_detail, json.dumps(error))
+                self.assertIn('Colab logs', error['status'])
+                self.assertIn(private_detail, '\n'.join(logs.output))
+            finally:
+                await ws.close()
+                await asyncio.wait_for(task, 2)
+
     async def test_additional_client_is_rejected_and_owner_is_released(self):
         owner, extra = FakeWebSocket(), FakeWebSocket()
         with patch.multiple(server, pipeline_ready=True, current_mode='img2img'), \
