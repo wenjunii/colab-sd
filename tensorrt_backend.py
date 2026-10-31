@@ -82,6 +82,7 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
     import torch_tensorrt
     import tensorrt
     logging.getLogger('torch_tensorrt.dynamo.conversion').setLevel(logging.WARNING)
+    logging.getLogger('torch_tensorrt.dynamo.conversion._conversion').setLevel(logging.INFO)
     package_requirement(torch.__version__)
     if not torch.cuda.is_available():
         raise RuntimeError('TensorRT compilation requires a CUDA GPU.')
