@@ -115,8 +115,14 @@ def apply_strength(new_strength):
     global current_strength, stream_img2img
     current_strength = float(new_strength)
     try:
-        if stream_img2img is not None and hasattr(stream_img2img, "update_strength"):
-            stream_img2img.update_strength(current_strength)
+        if stream_img2img is not None:
+            if hasattr(stream_img2img, "update_strength"):
+                stream_img2img.update_strength(current_strength)
+            elif hasattr(stream_img2img, "stream") and hasattr(stream_img2img.stream, "t_list"):
+                t0 = max(5, min(44, int(45 - current_strength * 40)))
+                stream_img2img.stream.t_list = [t0, 45]
+                stream_img2img.prepare(prompt=current_prompt, num_inference_steps=50)
+                logger.info(f"Updated img2img denoise strength to {current_strength:.2f} (t_index_list={[t0, 45]})")
     except Exception as e:
         logger.error(f"Error updating strength: {e}")
 
@@ -295,7 +301,10 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             end = min(start + CHUNK_SIZE, len(jpg_bytes))
             chunk = jpg_bytes[start:end]
             header = bytes([frame_counter, chunk_idx, total_chunks])
-            await ws.send_bytes(header + chunk)
+            try:
+                await ws.send_bytes(header + chunk)
+            except Exception:
+                break
 
     txt2img_task = None
     stop_event = asyncio.Event()
