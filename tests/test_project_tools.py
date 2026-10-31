@@ -74,11 +74,11 @@ class ProjectToolsChecks(unittest.TestCase):
                        for node in ast.parse(''.join(notebook['cells'][3]['source'])).body
                        if isinstance(node, ast.Assign)}
         for variable, filename in (('server_code', 'colab_server.py'), ('protocol_code', 'bridge_protocol.py'),
-                                   ('launcher_code', 'colab_launcher.py')):
+                                   ('launcher_code', 'colab_launcher.py'), ('tensorrt_code', 'tensorrt_backend.py')):
             self.assertEqual(assignments[variable], (generate_notebook.PROJECT_DIR / filename).read_text(encoding='utf-8'))
 
     def test_notebook_check_detects_source_drift(self):
-        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py'):
+        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py', 'tensorrt_backend.py'):
             (self.root / filename).write_text('# initial source\n')
         generate_notebook.generate_notebook(self.root)
         generate_notebook.generate_notebook(self.root, check=True)
@@ -100,6 +100,24 @@ class ProjectToolsChecks(unittest.TestCase):
         with patch.object(colab_launcher.time, 'monotonic', side_effect=[0, 2]):
             with self.assertRaises(TimeoutError):
                 session.wait_for_ready()
+
+    def test_launcher_does_not_publish_a_pytorch_fallback_when_tensorrt_is_requested(self):
+        session = colab_launcher.BridgeSession(root=self.root, tensorrt=True)
+        session.processes['server'] = SimpleNamespace(poll=lambda: None)
+        with patch.object(colab_launcher.urllib.request, 'urlopen',
+                          return_value=io.StringIO('{"ready": true, "engine": "PyTorch (FP16)"}')):
+            with self.assertRaisesRegex(RuntimeError, 'not active'):
+                session.wait_for_ready()
+
+    def test_tensor_rt_dependency_failure_stops_before_starting_server(self):
+        session = colab_launcher.BridgeSession(root=self.root, tensorrt=True)
+        with patch.object(colab_launcher.socket, 'create_connection', side_effect=ConnectionRefusedError), \
+                patch('tensorrt_backend.ensure_dependencies', side_effect=RuntimeError('setup failed')), \
+                patch.object(session, '_spawn') as spawn:
+            with self.assertRaisesRegex(RuntimeError, 'setup failed'):
+                session.start()
+        spawn.assert_not_called()
+        self.assertTrue(session.tensorrt)
 
     def test_launcher_collects_url_across_log_chunks_and_stops_owned_processes(self):
         session = colab_launcher.BridgeSession(root=self.root)

@@ -152,27 +152,10 @@ class ServerChecks(unittest.TestCase):
             server.load_pipeline()
         self.assertEqual(calls[0]['t_index_list'], [0])
         self.assertEqual((calls[0]['width'], calls[0]['height']), (1024, 768))
-        self.assertEqual(calls[0]['engine_dir'], 'engines/1024x768')
+        self.assertEqual(calls[0]['acceleration'], 'none')
         self.assertEqual((server.stream_img2img.stream.kwargs['width'],
                           server.stream_img2img.stream.kwargs['height']), (1024, 768))
 
-    def test_tensorrt_builders_receive_size_and_are_restored_on_error(self):
-        compilers = {name: Mock() for name in ('compile_unet', 'compile_vae_encoder', 'compile_vae_decoder')}
-        trt = SimpleNamespace(**compilers)
-        acceleration = SimpleNamespace(tensorrt=trt)
-        package = SimpleNamespace(acceleration=acceleration)
-        with patch.dict('sys.modules', {'streamdiffusion': package,
-                                      'streamdiffusion.acceleration': acceleration,
-                                      'streamdiffusion.acceleration.tensorrt': trt}):
-            with self.assertRaisesRegex(RuntimeError, 'compile failed'):
-                with server.tensorrt_output_size(1024, 768):
-                    for name in compilers:
-                        getattr(trt, name)('model', engine_build_options={'onnx_opset': 17})
-                    raise RuntimeError('compile failed')
-        for name, compiler in compilers.items():
-            self.assertIs(getattr(trt, name), compiler)
-            self.assertEqual(compiler.call_args.kwargs['engine_build_options'],
-                             {'onnx_opset': 17, 'opt_image_width': 1024, 'opt_image_height': 768})
 
 
 class FakeWebSocket:

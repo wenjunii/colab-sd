@@ -65,7 +65,10 @@ class BridgeSession:
             self._check_processes()
             try:
                 with urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2) as response:
-                    if json.load(response).get('ready') is True:
+                    status = json.load(response)
+                    if status.get('ready') is True:
+                        if self.tensorrt and not str(status.get('engine', '')).startswith('TensorRT'):
+                            raise RuntimeError('TensorRT was requested but is not active. Inspect bridge_logs/server.log; no tunnel was started.')
                         return
             except (OSError, ValueError, urllib.error.URLError):
                 pass
@@ -93,10 +96,8 @@ class BridgeSession:
             pass
         try:
             if self.tensorrt:
-                result = subprocess.run([sys.executable, '-m', 'streamdiffusion.tools.install-tensorrt'], cwd=self.root)
-                if result.returncode:
-                    print('TensorRT setup failed; starting PyTorch FP16 instead.', flush=True)
-                    self.tensorrt = False
+                from tensorrt_backend import ensure_dependencies
+                ensure_dependencies(self.root)
             environment = os.environ.copy()
             environment['MAX_STREAM_FPS'] = str(self.max_fps)
             environment['ENABLE_TENSORRT'] = '1' if self.tensorrt else '0'

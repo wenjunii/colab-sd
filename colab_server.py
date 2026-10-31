@@ -55,7 +55,6 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
 import cv2
 import numpy as np
 from PIL import Image
@@ -63,6 +62,7 @@ import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
+from tensorrt_backend import compile_unet as compile_tensorrt_unet
 from bridge_protocol import (OUTPUT_RESOLUTIONS, PROTOCOL_VERSION, OUTPUT_CHUNK_BYTES,
                              MAX_INPUT_FRAME_BYTES, FrameAssembler, resolution, validate_controls)
 
@@ -387,50 +387,19 @@ def compress_frame(arr_bgr, max_bytes=None):
     raise ValueError("Could not encode an output JPEG within the frame byte budget")
 
 
-@contextmanager
-def tensorrt_output_size(width, height):
-    """Forward output size to the upstream wrapper's otherwise fixed-512 builds.
+def create_txt2img_pipeline():
+    # StreamDiffusion's bundled TensorRT/Polygraphy path targets old CUDA 11/12
+    # runtimes. Load the native models, then compile their UNets explicitly.
+    return StreamDiffusionWrapper(
+        model_id_or_path="stabilityai/sd-turbo",
+        t_index_list=[0], frame_buffer_size=1,
+        width=output_width, height=output_height, warmup=5,
+        acceleration="none", mode="txt2img",
+        use_lcm_lora=False, use_tiny_vae=True, cfg_type="none",
+        use_denoising_batch=True,
+        device="cuda" if torch.cuda.is_available() else "cpu", seed=current_seed,
+    )
 
-    The wrapper imports these compile functions during construction. Scope the
-    adapters to that construction on our single model worker and restore them.
-    """
-    import streamdiffusion.acceleration.tensorrt as trt
-    originals = {name: getattr(trt, name) for name in
-                 ("compile_unet", "compile_vae_encoder", "compile_vae_decoder")}
-    try:
-        for name, compiler in originals.items():
-            def compile_sized(*args, _compiler=compiler, **kwargs):
-                options = dict(kwargs.get("engine_build_options", {}))
-                options.update(opt_image_width=width, opt_image_height=height)
-                kwargs["engine_build_options"] = options
-                return _compiler(*args, **kwargs)
-            setattr(trt, name, compile_sized)
-        yield
-    finally:
-        for name, compiler in originals.items():
-            setattr(trt, name, compiler)
-
-
-def create_txt2img_pipeline(acceleration):
-    size_context = tensorrt_output_size(output_width, output_height) if acceleration == "tensorrt" else nullcontext()
-    with size_context:
-        return StreamDiffusionWrapper(
-            model_id_or_path="stabilityai/sd-turbo",
-            t_index_list=[0],
-            frame_buffer_size=1,
-            width=output_width,
-            height=output_height,
-            warmup=5,
-            acceleration=acceleration,
-            engine_dir=f"engines/{output_width}x{output_height}",
-            mode="txt2img",
-            use_lcm_lora=False,
-            use_tiny_vae=True,
-            cfg_type="none",
-            use_denoising_batch=True,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-            seed=current_seed,
-        )
 
 def load_pipeline():
     global stream_txt2img, stream_img2img, pipeline_ready, active_engine, applied_prompt_state
@@ -448,27 +417,12 @@ def load_pipeline():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    accel_mode = "tensorrt" if enable_tensorrt else "none"
-    active_engine = "TensorRT (Turbo)" if enable_tensorrt else "PyTorch (FP16)"
-    print(f">>> Initializing StreamDiffusion (SD-Turbo) on {device.upper()} with acceleration='{accel_mode}' (Engine: {active_engine})...")
-
-    # SD-Turbo's wrapper generates len(t_index_list) independent one-step images
-    # and returns only the first. A single index avoids discarding 3/4 of the batch.
-    print(">>> Initializing Text-to-Image pipeline (single-image SD-Turbo, t_index_list=[0])...")
-    try:
-        stream_txt2img = create_txt2img_pipeline(accel_mode)
-    except Exception as e:
-        if accel_mode == "tensorrt":
-            print(f">>> TensorRT initialization failed ({e}), falling back to PyTorch Native mode...")
-            accel_mode = "none"
-            active_engine = "PyTorch (FP16)"
-            stream_txt2img = create_txt2img_pipeline("none")
-        else:
-            raise
-    # The upstream wrapper can also catch TensorRT errors internally.
-    if accel_mode == "tensorrt" and type(stream_txt2img.stream.unet).__name__ != "UNet2DConditionModelEngine":
-        active_engine = "PyTorch (FP16)"
-        logger.warning("TensorRT did not activate; the wrapper is using PyTorch")
+    active_engine = "PyTorch (FP16)"
+    img2img_engine = "PyTorch (FP16)"
+    requested = "TensorRT" if enable_tensorrt else "PyTorch FP16"
+    print(f">>> Initializing SD-Turbo on {device.upper()}; requested backend: {requested}", flush=True)
+    print(">>> Initializing Text-to-Image pipeline (single-image SD-Turbo, t_index_list=[0])...", flush=True)
+    stream_txt2img = create_txt2img_pipeline()
     set_seed(current_seed)
 
     # 2. Image-to-Image / StreamV2V pipeline: initial t_index_list based on current_strength
@@ -511,8 +465,6 @@ def load_pipeline():
                 return pil_out[0] if isinstance(pil_out, list) else pil_out
 
         stream_img2img = SharedImg2ImgWrapper(stream_core)
-        img2img_engine = ("PyTorch + TensorRT VAE" if type(getattr(stream_core, 'vae', None)).__name__ == "AutoencoderKLEngine"
-                         else "PyTorch (FP16)")
     except Exception as e:
         print(">>> Fallback to standalone img2img wrapper:", e)
         stream_img2img = StreamDiffusionWrapper(
@@ -536,6 +488,16 @@ def load_pipeline():
     print(">>> Preparing both pipelines with initial prompt...")
     stream_txt2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
     stream_img2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
+
+    if enable_tensorrt:
+        # Batch one serves txt2img; the two-timestep img2img stream uses batch
+        # two. Compile and validate both before reporting readiness.
+        txt_unet = compile_tensorrt_unet(stream_txt2img.stream.unet, output_width, output_height, 1)
+        img_unet = compile_tensorrt_unet(stream_img2img.stream.unet, output_width, output_height, 2)
+        stream_txt2img.stream.unet = txt_unet
+        stream_img2img.stream.unet = img_unet
+        active_engine = img2img_engine = "TensorRT (UNet)"
+        print(">>> TensorRT UNet acceleration enabled for BOTH generation modes; TinyVAE remains PyTorch.", flush=True)
 
     print(">>> Warming up models...")
     with torch.no_grad():
@@ -576,6 +538,7 @@ def health():
         "width": output_width, "height": output_height,
         "client_connected": active_client is not None,
         "last_error": last_pipeline_error,
+        "requested_engine": "TensorRT" if enable_tensorrt else "PyTorch (FP16)",
     }, status_code=200 if pipeline_ready else 503)
 
 
