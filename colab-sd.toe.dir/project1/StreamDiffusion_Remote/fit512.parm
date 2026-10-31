@@ -1,6 +1,7 @@
 ?
+fit 0 fitoutside
 outputresolution 0 custom
-resolutionw 0 512
-resolutionh 0 512
+resolutionw 17 512 int(str(parent().par.Resolution.eval()).split("x")[0])
+resolutionh 17 512 int(str(parent().par.Resolution.eval()).split("x")[-1])
 outputaspect 0 resolution
 ?

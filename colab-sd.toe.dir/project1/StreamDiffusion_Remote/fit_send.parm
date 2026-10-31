@@ -1,0 +1,7 @@
+?
+fit 0 fitoutside
+outputresolution 0 custom
+resolutionw 17 256 max(1,round(op("null_cam").width*256/max(op("null_cam").width,op("null_cam").height)))
+resolutionh 17 256 max(1,round(op("null_cam").height*256/max(op("null_cam").width,op("null_cam").height)))
+outputaspect 0 resolution
+?

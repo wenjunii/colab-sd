@@ -9,7 +9,12 @@ __pycache__/
 *.so
 .env
 venv/
+.venv/
 env/
+engines/
+captures/
+bridge_logs/
+*.tmp
 
 # Build artifacts
 StreamDiffusion_Remote.tox.dir/
@@ -18,8 +23,9 @@ StreamDiffusion_Remote.tox.toc
 # Scratch and test files
 make_tox.py
 test_*.py
+!tests/test_*.py
 inspect_*.py
-test_project*
+/test_project*
 StreamDiffusion_TouchDesigner*
 new_project_expanded/
 tox_contents/

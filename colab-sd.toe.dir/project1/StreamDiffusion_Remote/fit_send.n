@@ -1,0 +1,9 @@
+TOP:fit
+tile 50 -400 130 90
+flags =  parlanguage 0
+inputs
+{
+0 	null_cam
+}
+color 0.67 0.67 0.67
+end

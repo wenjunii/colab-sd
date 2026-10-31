@@ -1,6 +1,6 @@
 ?
 fromop 201326609 "" parent()
 op 67108864 ..
-pars 67108864 "Serverurl Connect Mode Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh"
+pars 67108864 "Serverurl Connect Mode Resolution Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh"
 language 67108864 python
 ?
