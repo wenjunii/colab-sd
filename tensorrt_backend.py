@@ -124,9 +124,12 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
             # Decompose Diffusers' baddbmm into supported primitive operations.
             enable_experimental_decompositions=True,
             require_full_compilation=True, workspace_size=2 * 1024**3,
-            # Torch-TensorRT only stores/reuses refittable engines in its cache.
-            immutable_weights=False,
-            cache_built_engines=True, reuse_cached_engines=True, engine_cache_dir=str(cache),
+            # TensorRT 10.15 refit returned NaNs after a real cache hit on
+            # SD-Turbo. Rebuild immutable engines and reuse builder timings;
+            # numerical validation must still pass before either mode is ready.
+            immutable_weights=True,
+            cache_built_engines=False, reuse_cached_engines=False,
+            timing_cache_path=str(cache / 'timing-cache.bin'),
         )
         engine_count = sum(type(module).__name__ in ('TorchTensorRTModule', 'PythonTorchTensorRTModule')
                            for module in compiled.modules())

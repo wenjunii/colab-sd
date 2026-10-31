@@ -23,7 +23,8 @@ Run SD-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare
 
 Supports text/image generation, prompt blending, audio controls, telemetry, snapshots,
 and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 512.
-Resolution changes reload model buffers; TensorRT engines are cached per width/height.
+Resolution changes reload model buffers and rebuild TensorRT engines. Builder timings
+are cached per profile; engine reuse is disabled because SDK refit produced invalid output.
 TensorRT uses matching Torch-TensorRT wheels on Python 3.11+ / PyTorch 2.11+.
 Both modes compile and validate their UNets; TinyVAE stays in PyTorch. Requested
 acceleration never silently falls back to a successful native startup.

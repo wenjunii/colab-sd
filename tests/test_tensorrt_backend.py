@@ -75,8 +75,10 @@ class TensorRTChecks(unittest.TestCase):
                 self.assertFalse(compiler.call_args.kwargs['use_explicit_typing'])
                 self.assertEqual(compiler.call_args.kwargs['enabled_precisions'], {torch.float16})
                 self.assertEqual(compiler.call_args.kwargs['optimization_level'], 0)
-                self.assertFalse(compiler.call_args.kwargs['immutable_weights'])
-                self.assertIn('sdk-10.15.1', compiler.call_args.kwargs['engine_cache_dir'])
+                self.assertTrue(compiler.call_args.kwargs['immutable_weights'])
+                self.assertFalse(compiler.call_args.kwargs['cache_built_engines'])
+                self.assertFalse(compiler.call_args.kwargs['reuse_cached_engines'])
+                self.assertIn('sdk-10.15.1', compiler.call_args.kwargs['timing_cache_path'])
                 processors = compiler.call_args.args[0].model.attn_processors
                 self.assertIs(processors['block.attn1.processor'], export_attention)
                 self.assertIs(processors['block.attn2.processor'], export_attention)
