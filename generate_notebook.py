@@ -23,7 +23,8 @@ Run SD-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare
 
 Supports text/image generation, prompt blending, audio controls, telemetry, snapshots,
 and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 512.
-Resolution changes reload model buffers; TensorRT engines are cached per width/height.
+Resolution changes reload model buffers and rebuild TensorRT engines. Builder timings
+are cached per profile; engine reuse is disabled because SDK refit produced invalid output.
 TensorRT uses matching Torch-TensorRT wheels on Python 3.11+ / PyTorch 2.11+.
 Both modes compile and validate their UNets; TinyVAE stays in PyTorch. Requested
 acceleration never silently falls back to a successful native startup.
@@ -59,8 +60,6 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         ENABLE_TENSORRT = False # @param {type:"boolean"}
         MAX_FPS = 60 # @param {type:"integer"}
 
-        from html import escape
-        from IPython.display import display, HTML
         if 'bridge_session' in globals():
             bridge_session.stop()
         import importlib
@@ -69,7 +68,8 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         bridge_session = colab_launcher.BridgeSession(tensorrt=ENABLE_TENSORRT, max_fps=MAX_FPS)
         try:
             ws_url = bridge_session.start()
-            display(HTML(f'<h3>StreamDiffusion is ready</h3><p>Paste this URL into TouchDesigner:</p><pre>{escape(ws_url)}</pre>'))
+            print('StreamDiffusion is ready. Paste this URL into TouchDesigner:')
+            print(ws_url, flush=True)
             bridge_session.wait()
         except KeyboardInterrupt:
             print('Stopping this bridge session...')

@@ -77,7 +77,7 @@ flowchart LR
 3. Execute cells 1 through 3.
 4. In **Cell 4 (Launch Server)**, configure the **1-Toggle Acceleration Switch**:
    * **`ENABLE_TENSORRT = False` (Default):** PyTorch Native FP16 without engine compilation.
-   * **`ENABLE_TENSORRT = True`:** Installs a Torch-TensorRT release matching the existing PyTorch build, then compiles and validates the UNet for both modes. Requires Python 3.11+ and PyTorch 2.11+. First-time compilation can take several minutes per output size. TinyVAE stays in PyTorch. Actual FPS and latency depend on GPU, resolution, and connection.
+   * **`ENABLE_TENSORRT = True`:** Installs a Torch-TensorRT release matching the existing PyTorch build, then compiles and validates the UNet for both modes. Requires Python 3.11+ and PyTorch 2.11+. Compilation can take several minutes at startup and after an output-size change. TinyVAE stays in PyTorch. Actual FPS and latency depend on GPU, resolution, and connection.
 5. Run Cell 4. The server downloads SD-Turbo weights (~2.5GB), completes GPU warmup, and displays your live WebSocket endpoint:
    ```text
    StreamDiffusion is ready
@@ -100,7 +100,7 @@ Setup checks out [StreamDiffusion revision `b623251`](https://github.com/cumulo-
    * **Generation Mode:** Choose `Text to Image` or `Image / Noise to Image`.
    * **Prompt A / Prompt B & Blend:** Set your creative prompts and blend between them with the slider.
 4. Video streams directly to `null1` in real time with live telemetry!
-5. Choose **Output Resolution / Ratio** to trade detail for speed and select the canvas shape. Changing resolution briefly pauses generation while model buffers reload. TensorRT compiles and caches engines separately for each width/height pair; first use of a new size can take several minutes. 512 × 512 is the model's preferred size. Larger output uses more GPU memory and bandwidth and may reduce FPS.
+5. Choose **Output Resolution / Ratio** to trade detail for speed and select the canvas shape. Changing resolution pauses generation while model buffers reload. TensorRT rebuilds both engines for the new dimensions, which can take several minutes. 512 × 512 is the model's preferred size. Larger output uses more GPU memory and bandwidth and may reduce FPS.
 
 | Aspect ratio | Output presets |
 | :--- | :--- |
@@ -205,7 +205,7 @@ Output JPEG quality adapts without changing the selected dimensions. The frame b
 ## 💡 Tips & Troubleshooting
 
 * **Reloading the Component in TouchDesigner:** If you make changes or pull an update while TouchDesigner is running, select **File $\rightarrow$ Revert to Saved**, or drag and drop `StreamDiffusion_Remote.tox` into your project. TouchDesigner does not reload `.toe` files from disk automatically while open.
-* **Checking Engine Status:** Both modes use `TensorRT (UNet)` only after their separately compiled UNets pass output validation. Text generation uses batch one and the two-timestep image stream uses batch two. TinyVAE remains in PyTorch. Caches are separated by output dimensions, batch size, GPU capability, and software versions.
+* **Checking Engine Status:** Both modes use `TensorRT (UNet)` only after their separately compiled UNets pass output validation. Text generation uses batch one and the two-timestep image stream uses batch two. TinyVAE remains in PyTorch. Builder timing caches are separated by dimensions, batch size, GPU capability, and software versions. Engine reuse is disabled: a real TensorRT 10.15 cache/refit test returned NaNs, which output validation caught before readiness. Each startup or resolution change rebuilds immutable engines. Replacing the Colab runtime also discards its builder timing cache.
 * **Old TensorRT Fallback:** `No module named 'polygraphy'` with CUDA 13 indicates the old StreamDiffusion installer path: it only handles CUDA 11/12 and can return without installing anything. The updated notebook uses [Torch-TensorRT](https://docs.pytorch.org/TensorRT/getting_started/installation.html), preserves the installed PyTorch/CUDA build, and verifies the actual backend before creating a tunnel. Update the notebook and rerun its write-server and launch cells; installing Polygraphy alone does not modernize the old compiler.
 * **Measuring Improvements:** Compare Effective FPS, Server Frame Processing, Frame Round Trip, and Network Ping at the same output size and GPU type. The single-image batch reduces wasted text-generation work; live FPS and end-to-end latency still need measurement on your Colab connection. Start at 384 or 512, then try 256 for speed.
 * **Connection Status:** Uploads pause until the socket is connected and the server confirms the requested mode and output size. The FPS readout falls to zero if no frames arrive. HTTP(S) tunnel addresses pasted into the URL control normalize to WS(S) and receive `/ws/stream` when no path was supplied.
@@ -239,7 +239,7 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `bridge_protocol.py` | Shared output presets, control validation, and input frame assembly |
 | `colab_server.py` | Model loading, recovery, generation, health, and WebSocket streaming |
 | `colab_setup.py` / `colab_launcher.py` | Colab environment setup and owned server/tunnel lifecycle |
-| `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, output validation, and per-mode engine caches |
+| `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, output validation, and per-mode builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
 | `generate_notebook.py` | Self-contained notebook generation and freshness checking |
 
