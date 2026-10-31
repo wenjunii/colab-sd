@@ -107,6 +107,9 @@ def onDisconnect(dat):
     p_status = getattr(parent().par, 'Status', None)
     if p_status is not None:
         p_status.val = 'Disconnected'
+    p_eng = getattr(parent().par, 'Engine', None)
+    if p_eng is not None:
+        p_eng.val = '--'
     p_fps = getattr(parent().par, 'Fps', None)
     if p_fps is not None:
         p_fps.val = '0.0 FPS'
@@ -133,6 +136,11 @@ def onReceiveText(dat, rowIndex, message):
         data = json.loads(message)
         msg_type = data.get('type', '')
         
+        if 'engine' in data:
+            p_eng = getattr(parent().par, 'Engine', None)
+            if p_eng is not None:
+                p_eng.val = data['engine']
+
         if msg_type == 'welcome':
             vram = data.get('vram', '--')
             temp = data.get('temp', '--')
@@ -142,7 +150,8 @@ def onReceiveText(dat, rowIndex, message):
             p_temp = getattr(parent().par, 'Gputemp', None)
             if p_temp is not None and temp != '--':
                 p_temp.val = temp
-            print(f"[StreamDiffusion] Handshake received. VRAM: {vram}, Temp: {temp}")
+            eng = data.get('engine', 'PyTorch')
+            print(f"[StreamDiffusion] Handshake received. Engine: {eng}, VRAM: {vram}, Temp: {temp}")
             
         if 'status' in data:
             p_status = getattr(parent().par, 'Status', None)
@@ -506,6 +515,7 @@ def save_snapshot():
             'fps': str(getattr(p, 'Fps', '')),
             'inference_time': str(getattr(p, 'Gputime', '')),
             'network_ping': str(getattr(p, 'Ping', '')),
+            'engine': str(getattr(p, 'Engine', '')),
             'vram': str(getattr(p, 'Vram', '')),
             'gpu_temp': str(getattr(p, 'Gputemp', ''))
         }
@@ -542,11 +552,12 @@ pages 1 StreamDiffusion
 772804865 Audstrength "Audio -> Denoise Gain" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 17
 772804865 Audseedthresh "Audio Beat Seed Threshold" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 18
 772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 19
-772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
-772804868 Gputime "Colab Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
-772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
-772804868 Vram "Colab GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
-772804868 Gputemp "Colab GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
+772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
+772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
+772804868 Gputime "Colab Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
+772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
+772804868 Vram "Colab GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
+772804868 Gputemp "Colab GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
 ?
 '''
 
@@ -569,6 +580,7 @@ Audiochop 67108928 in_audio
 Audstrength 67108928 0.3
 Audseedthresh 67108928 0.8
 Status 67109184 Disconnected
+Engine 67109184 "--"
 Fps 67109184 "0.0 FPS"
 Gputime 67109184 "-- ms"
 Ping 67109184 "-- ms"

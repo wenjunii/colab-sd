@@ -88,6 +88,10 @@ stream_txt2img = None
 stream_img2img = None
 pipeline_ready = False
 
+# Engine acceleration state
+enable_tensorrt = os.environ.get("ENABLE_TENSORRT", "0") in ("1", "true", "True") or "--tensorrt" in sys.argv
+active_engine = "TensorRT (Turbo)" if enable_tensorrt else "PyTorch (FP16)"
+
 # Prompt state
 current_prompt_a = "cinematic cyberpunk cityscape, neon lights, 8k, detailed"
 current_prompt_b = "bioluminescent alien jungle, glowing flora, ethereal, 8k"
@@ -222,28 +226,54 @@ def compress_frame(arr_bgr, max_bytes=48000):
     return buf.tobytes()
 
 def load_pipeline():
-    global stream_txt2img, stream_img2img, pipeline_ready
+    global stream_txt2img, stream_img2img, pipeline_ready, active_engine
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f">>> Initializing StreamDiffusion (SD-Turbo) on {device.upper()}...")
+    accel_mode = "tensorrt" if enable_tensorrt else "none"
+    print(f">>> Initializing StreamDiffusion (SD-Turbo) on {device.upper()} with acceleration='{accel_mode}' (Engine: {active_engine})...")
 
     # 1. Text-to-Image pipeline: [0, 16, 32, 45] produces full, coherent, prompt-matching frames
     print(">>> Initializing Text-to-Image pipeline (t_index_list=[0, 16, 32, 45])...")
-    stream_txt2img = StreamDiffusionWrapper(
-        model_id_or_path="stabilityai/sd-turbo",
-        t_index_list=[0, 16, 32, 45],
-        frame_buffer_size=1,
-        width=512,
-        height=512,
-        warmup=5,
-        acceleration="none",
-        mode="txt2img",
-        use_lcm_lora=False,
-        use_tiny_vae=True,
-        cfg_type="none",
-        use_denoising_batch=True,
-        device=device,
-        seed=current_seed,
-    )
+    try:
+        stream_txt2img = StreamDiffusionWrapper(
+            model_id_or_path="stabilityai/sd-turbo",
+            t_index_list=[0, 16, 32, 45],
+            frame_buffer_size=1,
+            width=512,
+            height=512,
+            warmup=5,
+            acceleration=accel_mode,
+            engine_dir="engines",
+            mode="txt2img",
+            use_lcm_lora=False,
+            use_tiny_vae=True,
+            cfg_type="none",
+            use_denoising_batch=True,
+            device=device,
+            seed=current_seed,
+        )
+    except Exception as e:
+        if accel_mode == "tensorrt":
+            print(f">>> TensorRT initialization failed ({e}), falling back to PyTorch Native mode...")
+            accel_mode = "none"
+            active_engine = "PyTorch (FP16)"
+            stream_txt2img = StreamDiffusionWrapper(
+                model_id_or_path="stabilityai/sd-turbo",
+                t_index_list=[0, 16, 32, 45],
+                frame_buffer_size=1,
+                width=512,
+                height=512,
+                warmup=5,
+                acceleration="none",
+                mode="txt2img",
+                use_lcm_lora=False,
+                use_tiny_vae=True,
+                cfg_type="none",
+                use_denoising_batch=True,
+                device=device,
+                seed=current_seed,
+            )
+        else:
+            raise
     set_seed(current_seed)
 
     # 2. Image-to-Image / StreamV2V pipeline: initial t_index_list based on current_strength
@@ -349,6 +379,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
     await websocket.send_text(json.dumps({
         "type": "welcome",
         "message": "StreamDiffusion server connected",
+        "engine": active_engine,
         "prompt_a": current_prompt_a,
         "prompt_b": current_prompt_b,
         "blend": current_prompt_blend,
@@ -413,6 +444,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                 v_str, t_str = get_gpu_telemetry()
                                 await websocket.send_text(json.dumps({
                                     "type": "stats",
+                                    "engine": active_engine,
                                     "inf_ms": round(inf_ms, 1),
                                     "vram": v_str,
                                     "temp": t_str,
@@ -536,6 +568,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                         v_str, t_str = get_gpu_telemetry()
                                         await websocket.send_text(json.dumps({
                                             "type": "stats",
+                                            "engine": active_engine,
                                             "inf_ms": round(inf_ms, 1),
                                             "vram": v_str,
                                             "temp": t_str,
