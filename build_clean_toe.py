@@ -76,7 +76,8 @@ def onCook(scriptOp):
             scriptOp.par.resolutionh = out_h
             
         rgba = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGBA)
-        scriptOp.copyNumpyArray(np.ascontiguousarray(rgba[::-1]))
+        rgba_flipped = np.ascontiguousarray(np.flipud(rgba))
+        scriptOp.copyNumpyArray(rgba_flipped)
     except Exception as e:
         print('[StreamDiffusion] Error in script_receiver onCook:', e)
 '''
@@ -98,7 +99,6 @@ def onConnect(dat):
     p_status = getattr(parent().par, 'Status', None)
     if p_status is not None:
         p_status.val = 'Connected (Streaming)'
-    parent().store('in_flight', 0)
     parent().store('can_send', True)
     print('[StreamDiffusion] WebSocket Connected to Colab!')
     send_control(force=True)
@@ -125,7 +125,6 @@ def onDisconnect(dat):
     p_temp = getattr(parent().par, 'Gputemp', None)
     if p_temp is not None:
         p_temp.val = '--'
-    parent().store('in_flight', 0)
     parent().store('can_send', True)
     print('[StreamDiffusion] WebSocket Disconnected.')
     global current_frame_id, frame_chunks
@@ -199,11 +198,8 @@ def onReceiveBinary(dat, contents):
         last_frame_bytes = assembled
         parent().store('last_frame_bytes', assembled)
         
-        # Pipelined Flow Control: decrement in-flight frame counter
-        in_flight = parent().fetch('in_flight', 0)
-        parent().store('in_flight', max(0, in_flight - 1))
+        # Adaptive Flow Control: unlock sending immediately upon frame receipt
         parent().store('can_send', True)
-        
         total_received += 1
         fps_frame_count += 1
         
@@ -239,9 +235,6 @@ def send_control(force=False, strength_override=None):
     p = parent().par
     mode = 'img2img' if getattr(p, 'Mode', None) and p.Mode.eval() == 'img2img' else 'txt2img'
     
-    steps_par = getattr(p, 'Steps', None)
-    steps_val = int(steps_par.eval()) if steps_par is not None else 2
-    
     prompt_a = str(getattr(p, 'Prompta', getattr(p, 'Prompt', '')))
     prompt_b = str(getattr(p, 'Promptb', ''))
     blend_val = float(getattr(p, 'Promptblend', 0.0))
@@ -257,7 +250,6 @@ def send_control(force=False, strength_override=None):
     msg = {
         'type': 'control',
         'mode': mode,
-        'steps': steps_val,
         'prompt_a': prompt_a,
         'prompt_b': prompt_b,
         'blend': blend_val,
@@ -272,7 +264,7 @@ def send_control(force=False, strength_override=None):
     if ws and ws.par.active.eval():
         try:
             ws.sendText(json.dumps(msg))
-            print(f"[StreamDiffusion] Sent control: mode={mode}, steps={steps_val}, A='{prompt_a[:15]}...', str={strength_val:.2f}, seed={seed_val}")
+            print(f"[StreamDiffusion] Sent control: mode={mode}, A='{prompt_a[:20]}...', B='{prompt_b[:20]}...', blend={blend_val:.2f}, str={strength_val:.2f}, seed={seed_val}")
         except Exception as e:
             print('[StreamDiffusion] Error sending control:', e)
     else:
@@ -365,27 +357,17 @@ def onFrameStart(frame):
     if not ws or not ws.par.active.eval():
         return
 
-    # Double-Buffered / Pipelined Flow Control:
-    # Allows 2 frames in-flight when set to 'double' to hide network transmission behind GPU compute
-    flow_par = getattr(parent().par, 'Flowmode', None)
-    is_double = (flow_par is None or flow_par.eval() == 'double')
-    max_in_flight = 2 if is_double else 1
-
-    in_flight = parent().fetch('in_flight', 0)
+    # Adaptive Flow Control:
+    # Only send when server is ready (replied to previous frame)
+    # or after 250ms watchdog timeout to recover from any dropped packet
+    can_send = parent().fetch('can_send', True)
     last_send_time = parent().fetch('last_send_time', 0.0)
-
-    # Watchdog: if nothing received for 300ms, reset in_flight counter to recover from drops
-    if in_flight > 0 and (now - last_send_time > 0.30):
-        in_flight = 0
-        parent().store('in_flight', 0)
-        parent().store('can_send', True)
-
-    if in_flight >= max_in_flight:
+    
+    if not can_send and (now - last_send_time < 0.25):
         return
 
-    # Dynamic frame interval ceiling (allows up to 80 FPS in double buffer, 60 FPS in single)
-    min_interval = 0.012 if is_double else 0.016
-    if (now - last_send_time < min_interval):
+    # Throttle: Cap maximum transmission at 30 FPS (~33ms)
+    if (now - last_send_time < 0.033):
         return
 
     cam = op('null_cam')
@@ -400,11 +382,10 @@ def onFrameStart(frame):
             img_bgr = (np.clip(arr[:, :, :3], 0.0, 1.0) * 255).astype(np.uint8)
             img_bgr = cv2.flip(img_bgr, 0)
             
-            # If not already 256x256, downsample
-            if img_bgr.shape[0] != 256 or img_bgr.shape[1] != 256:
-                img_bgr = cv2.resize(img_bgr, (256, 256), interpolation=cv2.INTER_AREA)
-                
-            ret, buf = cv2.imencode('.jpg', img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+            # Downsample to 256x256 before JPEG compression
+            # Payload stays tiny (~5KB-8KB) while preserving full visual structures
+            img_small = cv2.resize(img_bgr, (256, 256), interpolation=cv2.INTER_AREA)
+            ret, buf = cv2.imencode('.jpg', img_small, [int(cv2.IMWRITE_JPEG_QUALITY), 55])
             if ret:
                 data = buf.tobytes()
                 
@@ -421,12 +402,12 @@ def onFrameStart(frame):
                     header = bytes([70, 82, 77, 58, frame_id_seq, chunk_idx, total_chunks])
                     ws.sendBinary(header + chunk)
                 
-                parent().store('in_flight', in_flight + 1)
-                parent().store('can_send', (in_flight + 1 < max_in_flight))
+                # Mark as waiting for server reply
+                parent().store('can_send', False)
                 parent().store('last_send_time', now)
                 frame_count += 1
                 if frame_count % 30 == 1:
-                    print(f"[StreamDiffusion] Streaming input frame #{frame_count} ({len(data)} bytes in {total_chunks} chunk(s), in_flight={in_flight+1})")
+                    print(f"[StreamDiffusion] Streaming input frame #{frame_count} ({len(data)} bytes in {total_chunks} chunk(s))")
     except Exception as e:
         print('[StreamDiffusion] Error in exec_send_frame:', e)
 
@@ -460,7 +441,7 @@ import numpy as np
 
 def onValueChange(par, prev):
     try:
-        if par.name in ['Prompta', 'Promptb', 'Promptblend', 'Negprompt', 'Prompt', 'Mode', 'Steps', 'Source', 'Strength', 'Seed']:
+        if par.name in ['Prompta', 'Promptb', 'Promptblend', 'Negprompt', 'Prompt', 'Mode', 'Source', 'Strength', 'Seed']:
             for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
                 cb = op(name)
                 if cb and hasattr(cb.module, 'send_control'):
@@ -528,15 +509,12 @@ def save_snapshot():
             'prompt_b': str(getattr(p, 'Promptb', '')),
             'prompt_blend': float(getattr(p, 'Promptblend', 0.0)),
             'neg_prompt': str(getattr(p, 'Negprompt', '')),
-            'steps': str(getattr(p, 'Steps', '2')),
-            'flow_mode': str(getattr(p, 'Flowmode', 'double')),
             'strength': float(getattr(p, 'Strength', 0.6)),
             'seed': int(getattr(p, 'Seed', 42)),
             'mode': str(getattr(p, 'Mode', 'txt2img')),
             'fps': str(getattr(p, 'Fps', '')),
             'inference_time': str(getattr(p, 'Gputime', '')),
             'network_ping': str(getattr(p, 'Ping', '')),
-            'engine': str(getattr(p, 'Engine', '')),
             'vram': str(getattr(p, 'Vram', '')),
             'gpu_temp': str(getattr(p, 'Gputemp', ''))
         }
@@ -556,31 +534,29 @@ pages 1 StreamDiffusion
 772804868 Serverurl "Colab WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 0
 772804867 Connect "Connect to Colab" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
 772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 2
-772804879 Steps "Diffusion Steps" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 1 "1 Step (Ultra Turbo ~35-50 FPS)" 2 "2 Steps (Balanced ~25 FPS)" 4 "4 Steps (High Quality ~14 FPS)" 3
-772804879 Flowmode "Flow Control" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 double "Double Buffered (High FPS)" single "Single Token (Strict Latency)" 4
-772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 5
-772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 6
-772804868 Prompta "Prompt A" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
-772804868 Promptb "Prompt B" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
-772804865 Promptblend "Prompt Blend (A <-> B)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
-772804868 Negprompt "Negative Prompt" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
-772804869 Submitprompt "Submit Prompts" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
-772804865 Strength "Denoise Strength" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 12
-772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 13
-772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 14
-772804869 Snapshot "Take Snapshot (PNG+JSON)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 15
-772804868 Snapdir "Snapshot Directory" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 16
-772804867 Audiorx "Audio Reactivity" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 17
-772804868 Audiochop "Audio CHOP Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 18
-772804865 Audstrength "Audio -> Denoise Gain" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 19
-772804865 Audseedthresh "Audio Beat Seed Threshold" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
-772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
-772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
-772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
-772804868 Gputime "Colab Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
-772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
-772804868 Vram "Colab GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
-772804868 Gputemp "Colab GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 27
+772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 3
+772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 4
+772804868 Prompta "Prompt A" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 5
+772804868 Promptb "Prompt B" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 6
+772804865 Promptblend "Prompt Blend (A <-> B)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
+772804868 Negprompt "Negative Prompt" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
+772804869 Submitprompt "Submit Prompts" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
+772804865 Strength "Denoise Strength" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
+772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
+772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 12
+772804869 Snapshot "Take Snapshot (PNG+JSON)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 13
+772804868 Snapdir "Snapshot Directory" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 14
+772804867 Audiorx "Audio Reactivity" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 15
+772804868 Audiochop "Audio CHOP Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 16
+772804865 Audstrength "Audio -> Denoise Gain" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 17
+772804865 Audseedthresh "Audio Beat Seed Threshold" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 18
+772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 19
+772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
+772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
+772804868 Gputime "Colab Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
+772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
+772804868 Vram "Colab GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
+772804868 Gputemp "Colab GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
 ?
 '''
 
@@ -589,8 +565,6 @@ pageindex 0 3
 Serverurl 67108928 wss://samples-null-chance-beverage.trycloudflare.com/ws/stream
 Connect 67108928 off
 Mode 67108928 txt2img
-Steps 67108928 2
-Flowmode 67108928 double
 Source 67108928 in1
 Displaymode 67108928 ai
 Prompta 67108928 "cinematic cyberpunk cityscape, neon lights, 8k, detailed"
@@ -664,7 +638,7 @@ def build_toe_and_tox():
         "?\n"
         "fromop 201326609 \"\" parent()\n"
         "op 67108864 ..\n"
-        "pars 67108864 \"Serverurl Connect Mode Steps Flowmode Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh\"\n"
+        "pars 67108864 \"Serverurl Connect Mode Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh\"\n"
         "language 67108864 python\n"
         "?\n"
     )
