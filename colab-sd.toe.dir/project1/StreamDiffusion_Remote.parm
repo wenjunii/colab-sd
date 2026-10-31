@@ -1,8 +1,12 @@
 ?
 pageindex 0 3
 Serverurl 67108928 wss://samples-null-chance-beverage.trycloudflare.com/ws/stream
-Connect 67108928 on
-Prompt 67108928 "cat"
+Connect 67108928 off
+Prompt 67108928 "cyberpunk cat, neon lights, 8k, detailed"
+Strength 67108928 0.6
 Seed 67108928 42
 Status 67109184 Disconnected
+Fps 67109184 "0.0 FPS"
+Gputime 67109184 "-- ms"
+Ping 67109184 "-- ms"
 ?

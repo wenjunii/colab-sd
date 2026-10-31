@@ -1,6 +1,6 @@
 ?
 fromop 201326609 "" parent()
 op 67108864 ..
-pars 67108864 "Prompt Mode Source Seed Randomseed Sendprompt Connect"
+pars 67108864 "Prompt Mode Source Strength Seed Randomseed Sendprompt Connect"
 language 67108864 python
 ?
