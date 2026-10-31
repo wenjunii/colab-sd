@@ -97,9 +97,29 @@ class ServerChecks(unittest.TestCase):
         self.assertEqual(json.loads(server.health().body)['last_error'], 'Configuration failed; see Colab server logs')
 
     def test_engine_readout_follows_the_current_mode(self):
-        with patch.multiple(server, active_engine='TensorRT (Turbo)', img2img_engine='PyTorch + TensorRT VAE'):
-            self.assertEqual(server.engine_for_mode('txt2img'), 'TensorRT (Turbo)')
-            self.assertEqual(server.engine_for_mode('img2img'), 'PyTorch + TensorRT VAE')
+        with patch.multiple(server, active_engine='TensorRT (UNet)', img2img_engine='PyTorch (FP16)'):
+            self.assertEqual(server.engine_for_mode('txt2img'), 'TensorRT (UNet)')
+            self.assertEqual(server.engine_for_mode('img2img'), 'PyTorch (FP16)')
+
+    def test_second_tensorrt_failure_never_reports_ready_or_activates_first_engine(self):
+        source_unet = object()
+        txt = Mock(stream=SimpleNamespace(pipe=SimpleNamespace(dtype=torch.float16),
+                                         vae=None, unet=source_unet))
+        core = Mock(unet=source_unet)
+        with patch.multiple(server, enable_tensorrt=True, StreamDiffusionWrapper=Mock()), \
+                patch.object(server, 'create_txt2img_pipeline', return_value=txt), \
+                patch.dict('sys.modules', {'streamdiffusion': SimpleNamespace(StreamDiffusion=Mock(return_value=core))}), \
+                patch.object(server, 'compile_tensorrt_unet', side_effect=[object(), RuntimeError('compile failed')]) as compile_unet, \
+                patch.object(server, 'apply_prompts_and_blend'), patch('builtins.print'):
+            with self.assertRaisesRegex(RuntimeError, 'compile failed'):
+                server.load_pipeline()
+            self.assertEqual([call.args[3] for call in compile_unet.call_args_list], [1, 2])
+            self.assertIs(txt.stream.unet, source_unet)
+            self.assertFalse(server.pipeline_ready)
+            status = json.loads(server.health().body)
+            self.assertEqual(status['requested_engine'], 'TensorRT')
+            self.assertEqual(status['engine'], 'PyTorch (FP16)')
+            self.assertEqual(server.health().status_code, 503)
 
     def test_resize_and_jpeg_keep_requested_dimensions_and_color(self):
         source = cv2.imencode('.jpg', np.full((256, 256, 3), (0, 0, 255), np.uint8))[1].tobytes()

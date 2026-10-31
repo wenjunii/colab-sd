@@ -104,7 +104,9 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
     with torch.no_grad():
         expected = graph(*inputs).detach()
         compiled = torch_tensorrt.compile(
-            graph, ir='dynamo', inputs=inputs, enabled_precisions={torch.float16},
+            # Current Torch-TensorRT uses explicit typing. The UNet weights
+            # and latents already carry FP16; timesteps remain FP32.
+            graph, ir='dynamo', inputs=inputs, use_explicit_typing=True,
             require_full_compilation=True, workspace_size=2 * 1024**3,
             cache_built_engines=True, reuse_cached_engines=True, engine_cache_dir=str(cache),
         )

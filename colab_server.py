@@ -118,7 +118,7 @@ last_pipeline_error = None
 
 # Engine acceleration state
 enable_tensorrt = os.environ.get("ENABLE_TENSORRT", "0") in ("1", "true", "True") or "--tensorrt" in sys.argv
-active_engine = "TensorRT (Turbo)" if enable_tensorrt else "PyTorch (FP16)"
+active_engine = "PyTorch (FP16)"
 img2img_engine = "PyTorch (FP16)"
 
 

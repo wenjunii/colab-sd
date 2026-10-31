@@ -63,6 +63,8 @@ class TensorRTChecks(unittest.TestCase):
                 adapter = backend.compile_unet(FakeUNet(), 32, 16, 2, root)
                 self.assertEqual(adapter.batch_size, 2)
                 self.assertTrue(compiler.call_args.kwargs['require_full_compilation'])
+                self.assertTrue(compiler.call_args.kwargs['use_explicit_typing'])
+                self.assertNotIn('enabled_precisions', compiler.call_args.kwargs)
                 self.assertEqual(compiler.call_args.kwargs['inputs'][0].shape, (2, 4, 2, 4))
                 compiler.side_effect = lambda graph, **kwargs: graph
                 with self.assertRaisesRegex(RuntimeError, 'no TensorRT engines'):
