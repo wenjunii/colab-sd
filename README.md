@@ -177,7 +177,7 @@ Whenever you want to backup your project:
   ```powershell
   python sync_to_github.py "Your commit message"
   ```
-The script will automatically rebuild `.toe` and `.tox`, update the notebook, stage all files, and push to your private GitHub repo.
+The script will automatically rebuild `.toe` and `.tox`, update the notebook, stage all files, and push to your private GitHub repo (`wenjunii/colab-sd`). If branch protection is enabled on `main`, the script automatically handles creating and merging a pull request with admin credentials so syncing is completely frictionless.
 
 ---
 
