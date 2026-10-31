@@ -63,6 +63,7 @@ class TensorRTChecks(unittest.TestCase):
             root = Path(name).resolve()
             self.assertTrue(root.is_relative_to(Path(tempfile.gettempdir()).resolve()))
             with patch.dict('sys.modules', {'torch_tensorrt': module,
+                                           'tensorrt': SimpleNamespace(__version__='10.15.1'),
                                            'diffusers.models.attention_processor': SimpleNamespace(AttnProcessor=lambda: export_attention)}), \
                     patch.object(backend, 'package_requirement'), \
                     patch.object(torch.cuda, 'is_available', return_value=True), \
@@ -71,10 +72,12 @@ class TensorRTChecks(unittest.TestCase):
                 adapter = backend.compile_unet(FakeUNet(), 32, 16, 2, root)
                 self.assertEqual(adapter.batch_size, 2)
                 self.assertTrue(compiler.call_args.kwargs['require_full_compilation'])
-                self.assertTrue(compiler.call_args.kwargs['use_explicit_typing'])
-                self.assertNotIn('enabled_precisions', compiler.call_args.kwargs)
+                self.assertFalse(compiler.call_args.kwargs['use_explicit_typing'])
+                self.assertEqual(compiler.call_args.kwargs['enabled_precisions'], {torch.float16})
+                self.assertEqual(compiler.call_args.kwargs['optimization_level'], 0)
+                self.assertIn('sdk-10.15.1', compiler.call_args.kwargs['engine_cache_dir'])
                 processors = compiler.call_args.args[0].model.attn_processors
-                self.assertIs(processors['block.attn1.processor'], self_attention)
+                self.assertIs(processors['block.attn1.processor'], export_attention)
                 self.assertIs(processors['block.attn2.processor'], export_attention)
                 self.assertEqual(compiler.call_args.kwargs['inputs'][0].shape, (2, 4, 2, 4))
                 compiler.side_effect = lambda graph, **kwargs: graph

@@ -1,5 +1,6 @@
 """Torch-TensorRT acceleration for current Colab Python/CUDA runtimes."""
 from pathlib import Path
+import logging
 import re
 import subprocess
 import sys
@@ -79,6 +80,8 @@ class TensorRTUNet:
 def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tensorrt'):
     import torch
     import torch_tensorrt
+    import tensorrt
+    logging.getLogger('torch_tensorrt.dynamo.conversion').setLevel(logging.WARNING)
     package_requirement(torch.__version__)
     if not torch.cuda.is_available():
         raise RuntimeError('TensorRT compilation requires a CUDA GPU.')
@@ -98,24 +101,25 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
         torch.randn((batch_size, 77, unet.config.cross_attention_dim), device=unet.device, dtype=unet.dtype),
     ]
     cache = cache_directory(cache_root, width, height, batch_size, torch.__version__,
-                            torch_tensorrt.__version__, torch.cuda.get_device_capability())
+                            f'{torch_tensorrt.__version__}-sdk-{tensorrt.__version__}',
+                            torch.cuda.get_device_capability())
     cache.mkdir(parents=True, exist_ok=True)
     print(f'>>> Compiling TensorRT UNet: {width} x {height}, batch {batch_size}. First use can take several minutes.', flush=True)
     with torch.no_grad():
         expected = graph(*inputs).detach()
-        # Export selects CUDA FlashAttention for cross-attention, whose unequal
-        # query/key sequence lengths lack a Torch-TensorRT converter. Export
-        # those layers as equivalent matmul/softmax operations instead. Keep
-        # self-attention's efficient processor and compare against the original.
+        # Export standard attention operations: FlashAttention cross-attention
+        # lacks converter coverage, and its self-attention converter requires
+        # strong typing that triggers a TensorRT 10.15 builder error here.
+        # Compare the compiled result against the original attention processor.
         from diffusers.models.attention_processor import AttnProcessor
         unet.set_attn_processor({
-            name: AttnProcessor() if name.endswith('attn2.processor') else processor
-            for name, processor in unet.attn_processors.items()
+            name: AttnProcessor() for name in unet.attn_processors
         })
         compiled = torch_tensorrt.compile(
-            # Current Torch-TensorRT uses explicit typing. The UNet weights
-            # and latents already carry FP16; timesteps remain FP32.
-            graph, ir='dynamo', inputs=inputs, use_explicit_typing=True,
+            # This FP16 builder path avoids the TensorRT 10.15 strong-typing
+            # compiler failure while retaining full TensorRT graph coverage.
+            graph, ir='dynamo', inputs=inputs, use_explicit_typing=False,
+            enabled_precisions={torch.float16}, optimization_level=0,
             # Decompose Diffusers' baddbmm into supported primitive operations.
             enable_experimental_decompositions=True,
             require_full_compilation=True, workspace_size=2 * 1024**3,
