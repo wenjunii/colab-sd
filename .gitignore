@@ -11,7 +11,12 @@ __pycache__/
 venv/
 env/
 
+# Build artifacts
+StreamDiffusion_Remote.tox.dir/
+StreamDiffusion_Remote.tox.toc
+
 # Scratch and test files
+make_tox.py
 test_*.py
 inspect_*.py
 test_project*
