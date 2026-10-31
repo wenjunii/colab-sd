@@ -61,13 +61,19 @@ fps_frame_count = 0
 
 def onConnect(dat):
     parent().par.Status = 'Connected (Streaming)'
-    parent().store('ready_to_send', True)
+    parent().store('can_send', True)
     print('[StreamDiffusion] WebSocket Connected to Colab!')
     send_control(force=True)
 
 def onDisconnect(dat):
     parent().par.Status = 'Disconnected'
-    parent().store('ready_to_send', True)
+    parent().store('can_send', True)
+    if hasattr(parent().par, 'Fps'):
+        parent().par.Fps = '0.0 FPS'
+    if hasattr(parent().par, 'Gputime'):
+        parent().par.Gputime = '-- ms'
+    if hasattr(parent().par, 'Ping'):
+        parent().par.Ping = '-- ms'
     print('[StreamDiffusion] WebSocket Disconnected.')
     global current_frame_id, frame_chunks
     current_frame_id = -1
@@ -78,6 +84,8 @@ def onReceiveText(dat, rowIndex, message):
         data = json.loads(message)
         if 'status' in data:
             parent().par.Status = data['status']
+        if 'inf_ms' in data and hasattr(parent().par, 'Gputime'):
+            parent().par.Gputime = f"{data['inf_ms']:.1f} ms"
     except:
         pass
 
@@ -109,15 +117,24 @@ def onReceiveBinary(dat, contents):
         last_frame_bytes = assembled
         parent().store('last_frame_bytes', assembled)
         
-        # Adaptive Flow Control: signal ready to send next input frame
-        parent().store('ready_to_send', True)
+        # Adaptive Flow Control: unlock sending immediately upon frame receipt
+        parent().store('can_send', True)
         total_received += 1
         fps_frame_count += 1
         
         now = time.time()
+        # Telemetry: Network Ping (Round-Trip Time)
+        last_send_time = parent().fetch('last_send_time', 0.0)
+        if last_send_time > 0 and hasattr(parent().par, 'Ping'):
+            rtt = (now - last_send_time) * 1000.0
+            parent().par.Ping = f"{rtt:.1f} ms"
+            
+        # Telemetry: Effective FPS
         elapsed = now - last_fps_time
         if elapsed >= 1.0:
             current_fps = fps_frame_count / elapsed
+            if hasattr(parent().par, 'Fps'):
+                parent().par.Fps = f"{current_fps:.1f} FPS"
             parent().par.Status = f"Connected ({current_fps:.1f} FPS)"
             last_fps_time = now
             fps_frame_count = 0
@@ -132,10 +149,12 @@ def send_control(force=False):
     p = parent().par
     mode = 'img2img' if p.Mode.eval() == 'img2img' else 'txt2img'
     prompt_val = str(p.Prompt.eval() or '')
+    strength_val = float(p.Strength.eval()) if hasattr(p, 'Strength') else 0.6
     msg = {
         'type': 'control',
         'mode': mode,
         'prompt': prompt_val,
+        'strength': strength_val,
         'seed': int(p.Seed.eval()),
         'force': force,
         'width': 512,
@@ -145,7 +164,7 @@ def send_control(force=False):
     if ws and ws.par.active.eval():
         try:
             ws.sendText(json.dumps(msg))
-            print(f"[StreamDiffusion] Sent control: mode={mode}, prompt='{prompt_val}'")
+            print(f"[StreamDiffusion] Sent control: mode={mode}, strength={strength_val:.2f}, prompt='{prompt_val}'")
         except Exception as e:
             print('[StreamDiffusion] Error sending control:', e)
     else:
@@ -154,6 +173,7 @@ def send_control(force=False):
 
 EXEC_SEND_FRAME_CODE = '''import cv2
 import numpy as np
+import time
 
 # me - this DAT
 # frame - current timeline frame number
@@ -182,16 +202,17 @@ def onFrameStart(frame):
         return
 
     # Adaptive Flow Control:
-    # Only send when the server is ready (replied to previous frame)
-    # or after 12 frames timeout (~200ms) as a watchdog safety
-    ready = parent().fetch('ready_to_send', True)
-    last_send_frame = parent().fetch('last_send_frame', 0)
+    # Only send when server is ready (replied to previous frame)
+    # or after 250ms watchdog timeout to recover from any dropped packet
+    now = time.time()
+    can_send = parent().fetch('can_send', True)
+    last_send_time = parent().fetch('last_send_time', 0.0)
     
-    if not ready and (frame - last_send_frame < 12):
+    if not can_send and (now - last_send_time < 0.25):
         return
 
-    # Cap maximum transmission at 30 FPS (every 2nd frame minimum)
-    if frame - last_send_frame < 2:
+    # Throttle: Cap maximum transmission at 30 FPS (~33ms)
+    if (now - last_send_time < 0.033):
         return
 
     cam = op('null_cam')
@@ -227,8 +248,8 @@ def onFrameStart(frame):
                     ws.sendBinary(header + chunk)
                 
                 # Mark as waiting for server reply
-                parent().store('ready_to_send', False)
-                parent().store('last_send_frame', frame)
+                parent().store('can_send', False)
+                parent().store('last_send_time', now)
                 frame_count += 1
                 if frame_count % 30 == 1:
                     print(f"[StreamDiffusion] Streaming input frame #{frame_count} ({len(data)} bytes in {total_chunks} chunk(s))")
@@ -258,7 +279,7 @@ PAREXEC_CODE = '''import random
 # prev - the previous value
 
 def onValueChange(par, prev):
-    if par.name in ['Prompt', 'Mode', 'Source', 'Seed']:
+    if par.name in ['Prompt', 'Mode', 'Source', 'Strength', 'Seed']:
         for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
             cb = op(name)
             if cb and hasattr(cb.module, 'send_control'):
@@ -279,6 +300,38 @@ def onPulse(par):
                 break
 '''
 
+CPARM_CONTENT = '''?
+pages 1 StreamDiffusion
+772804868 Serverurl "Colab WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 0
+772804867 Connect "Connect to Colab" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
+772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 2
+772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 3
+772804868 Prompt Prompt 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4
+772804865 Strength "Denoise Strength" 1 1 0.1 1.0 0.1 1.0 0.6 2 0 "" "" StreamDiffusion 5
+772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 6
+772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
+772804869 Sendprompt "Send Update" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
+772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
+772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
+772804868 Gputime "Colab GPU Time" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
+772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 12
+?
+'''
+
+PARM_CONTENT = '''?
+pageindex 0 3
+Serverurl 67108928 wss://samples-null-chance-beverage.trycloudflare.com/ws/stream
+Connect 67108928 off
+Prompt 67108928 "cyberpunk cat, neon lights, 8k, detailed"
+Strength 67108928 0.6
+Seed 67108928 42
+Status 67109184 Disconnected
+Fps 67109184 "0.0 FPS"
+Gputime 67109184 "-- ms"
+Ping 67109184 "-- ms"
+?
+'''
+
 def make_td_text(code_str: str) -> bytes:
     code_bytes = code_str.encode('utf-8')
     header = (
@@ -297,9 +350,28 @@ def write_text_file(path: str, code_str: str):
 
 def build_toe_and_tox():
     base_dir = r'colab-sd.toe.dir\project1\StreamDiffusion_Remote'
+    proj_dir = r'colab-sd.toe.dir\project1'
     collapse_exe = r'C:\Program Files\Derivative\TouchDesigner\bin\toecollapse.exe'
     
-    # 1. Update text callbacks
+    # 1. Update Custom Parameters (.cparm and .parm)
+    with open(os.path.join(proj_dir, 'StreamDiffusion_Remote.cparm'), 'w', newline='\n') as f:
+        f.write(CPARM_CONTENT)
+    with open(os.path.join(proj_dir, 'StreamDiffusion_Remote.parm'), 'w', newline='\n') as f:
+        f.write(PARM_CONTENT)
+        
+    # 2. Update parexec_controls.parm to monitor Strength
+    parexec_parm = (
+        "?\n"
+        "fromop 201326609 \"\" parent()\n"
+        "op 67108864 ..\n"
+        "pars 67108864 \"Prompt Mode Source Strength Seed Randomseed Sendprompt Connect\"\n"
+        "language 67108864 python\n"
+        "?\n"
+    )
+    with open(os.path.join(base_dir, 'parexec_controls.parm'), 'w', newline='\n') as f:
+        f.write(parexec_parm)
+
+    # 3. Update text callbacks
     write_text_file(os.path.join(base_dir, 'script_receiver_callbacks.text'), SCRIPT_RECEIVER_CODE)
     write_text_file(os.path.join(base_dir, 'script_receiver_callbacks1.text'), SCRIPT_RECEIVER_CODE)
     write_text_file(os.path.join(base_dir, 'websocket1_callbacks.text'), WEBSOCKET_CODE)
@@ -307,7 +379,7 @@ def build_toe_and_tox():
     write_text_file(os.path.join(base_dir, 'parexec_controls.text'), PAREXEC_CODE)
     write_text_file(os.path.join(base_dir, 'exec_send_frame.text'), EXEC_SEND_FRAME_CODE)
     
-    # 2. Re-collapse colab-sd.toe
+    # 4. Re-collapse colab-sd.toe
     target_toe = 'colab-sd.toe'
     print(f"\nCollapsing {target_toe}...")
     res = subprocess.run([collapse_exe, target_toe], capture_output=True, text=True)
@@ -317,7 +389,7 @@ def build_toe_and_tox():
     else:
         print("ERROR: colab-sd.toe was not created.")
 
-    # 3. Build standalone StreamDiffusion_Remote.tox
+    # 5. Build standalone StreamDiffusion_Remote.tox
     tox_dir = r"StreamDiffusion_Remote.tox.dir"
     toc_path = r"StreamDiffusion_Remote.tox.toc"
     target_tox = r"StreamDiffusion_Remote.tox"
@@ -327,7 +399,7 @@ def build_toe_and_tox():
     os.makedirs(tox_dir, exist_ok=True)
     
     for ext in ['.cparm', '.n', '.parm']:
-        src = os.path.join(r"colab-sd.toe.dir\project1", f"StreamDiffusion_Remote{ext}")
+        src = os.path.join(proj_dir, f"StreamDiffusion_Remote{ext}")
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(tox_dir, f".{ext[1:]}"))
             

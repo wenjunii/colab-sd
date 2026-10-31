@@ -86,6 +86,7 @@ pipeline_ready = False
 current_prompt = "cinematic cyberpunk cityscape, neon lights, 8k, detailed"
 current_mode = "txt2img"
 current_seed = 42
+current_strength = 0.6
 
 def set_seed(s):
     torch.manual_seed(s)
@@ -109,6 +110,15 @@ def apply_prompt(new_prompt):
         logger.info(f"Updated prompt to: {new_prompt}")
     except Exception as e:
         logger.error(f"Error updating prompt: {e}")
+
+def apply_strength(new_strength):
+    global current_strength, stream_img2img
+    current_strength = float(new_strength)
+    try:
+        if stream_img2img is not None and hasattr(stream_img2img, "update_strength"):
+            stream_img2img.update_strength(current_strength)
+    except Exception as e:
+        logger.error(f"Error updating strength: {e}")
 
 def run_model_inference(input_image=None):
     """
@@ -164,14 +174,15 @@ def load_pipeline():
     )
     set_seed(current_seed)
 
-    # 2. Image-to-Image / StreamV2V pipeline: [32, 45] for responsive styling over inputs
-    print(">>> Initializing Image-to-Image / StreamV2V pipeline (t_index_list=[32, 45])...")
+    # 2. Image-to-Image / StreamV2V pipeline: initial t_index_list based on current_strength
+    t0_init = max(5, min(44, int(45 - current_strength * 40)))
+    print(f">>> Initializing Image-to-Image / StreamV2V pipeline (t_index_list=[{t0_init}, 45], strength={current_strength:.2f})...")
     try:
         from streamdiffusion import StreamDiffusion
         core_pipe = stream_txt2img.stream.pipe
         stream_core = StreamDiffusion(
             pipe=core_pipe,
-            t_index_list=[32, 45],
+            t_index_list=[t0_init, 45],
             torch_dtype=core_pipe.dtype,
             width=512,
             height=512,
@@ -189,6 +200,14 @@ def load_pipeline():
                 self.stream.prepare(prompt, **kwargs)
             def update_prompt(self, prompt):
                 self.stream.update_prompt(prompt)
+            def update_strength(self, strength: float):
+                # Dynamically maps strength [0.1..1.0] to start timestep index [44..5]
+                t0 = max(5, min(44, int(45 - strength * 40)))
+                new_t_list = [t0, 45]
+                if getattr(self.stream, "t_list", None) != new_t_list:
+                    self.stream.t_list = new_t_list
+                    self.stream.prepare(prompt=current_prompt, num_inference_steps=50)
+                    logger.info(f"Updated img2img denoise strength to {strength:.2f} (t_index_list={new_t_list})")
             def __call__(self, image):
                 # When passed a PIL Image, stream(...) automatically preprocesses it
                 # without diffusers value-range warnings!
@@ -201,7 +220,7 @@ def load_pipeline():
         print(">>> Fallback to standalone img2img wrapper:", e)
         stream_img2img = StreamDiffusionWrapper(
             model_id_or_path="stabilityai/sd-turbo",
-            t_index_list=[32, 45],
+            t_index_list=[t0_init, 45],
             frame_buffer_size=1,
             width=512,
             height=512,
@@ -251,7 +270,7 @@ def index():
 
 @app.websocket("/ws/stream")
 async def websocket_stream_endpoint(websocket: WebSocket):
-    global current_prompt, current_mode, current_seed
+    global current_prompt, current_mode, current_seed, current_strength
     await websocket.accept()
     logger.info("TouchDesigner client connected to WebSocket.")
 
@@ -261,6 +280,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         "prompt": current_prompt,
         "mode": current_mode,
         "seed": current_seed,
+        "strength": current_strength,
     }))
 
     CHUNK_SIZE = 2048
@@ -309,6 +329,17 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         await send_chunked_frame(websocket, jpg_bytes)
                         
                         frame_count += 1
+                        if frame_count % 10 == 0:
+                            try:
+                                await websocket.send_text(json.dumps({
+                                    "type": "stats",
+                                    "inf_ms": round(inf_ms, 1),
+                                    "mode": current_mode,
+                                    "strength": current_strength
+                                }))
+                            except Exception:
+                                pass
+                                
                         if frame_count % 25 == 1:
                             logger.info(f"StreamDiffusion active: frame #{frame_count} ({inf_ms:.1f}ms, {len(jpg_bytes)} bytes)")
                 except Exception as e:
@@ -333,10 +364,11 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     data = json.loads(message["text"])
                     msg_type = data.get("type", "")
 
-                    if msg_type == "control" or "prompt" in data or "mode" in data or "seed" in data:
+                    if msg_type == "control" or "prompt" in data or "mode" in data or "seed" in data or "strength" in data:
                         new_prompt = data.get("prompt")
                         new_mode = data.get("mode")
                         new_seed = data.get("seed")
+                        new_strength = data.get("strength")
 
                         if new_prompt is not None and (new_prompt != current_prompt or data.get("force", False)):
                             apply_prompt(new_prompt)
@@ -354,6 +386,9 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         if new_seed is not None and new_seed != current_seed:
                             current_seed = new_seed
                             set_seed(current_seed)
+
+                        if new_strength is not None and abs(float(new_strength) - current_strength) > 0.01:
+                            apply_strength(float(new_strength))
 
                     elif msg_type == "ping":
                         await websocket.send_text(json.dumps({"type": "pong", "time": time.time()}))
@@ -413,6 +448,17 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                 await send_chunked_frame(websocket, out_bytes)
 
                                 img2img_counter += 1
+                                if img2img_counter % 10 == 0:
+                                    try:
+                                        await websocket.send_text(json.dumps({
+                                            "type": "stats",
+                                            "inf_ms": round(inf_ms, 1),
+                                            "mode": current_mode,
+                                            "strength": current_strength
+                                        }))
+                                    except Exception:
+                                        pass
+
                                 if img2img_counter % 25 == 1:
                                     logger.info(f"StreamDiffusion img2img: frame #{img2img_counter} ({inf_ms:.1f}ms, {len(out_bytes)} bytes)")
                     except Exception as e:
