@@ -7,6 +7,7 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 ![Backend](https://img.shields.io/badge/Backend-FastAPI%20%2B%20WebSockets-green)
 ![Tunnel](https://img.shields.io/badge/Tunnel-Cloudflare%20(TLS)-yellow)
 ![Latency](https://img.shields.io/badge/Inference-~75ms%20(15--30%20FPS)-success)
+![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
 ---
 
@@ -177,10 +178,10 @@ Whenever you want to backup your project:
   ```powershell
   python sync_to_github.py "Your commit message"
   ```
-The script automatically rebuilds `.toe` and `.tox`, updates the notebook, stages all files, and synchronizes to your private GitHub repo (`wenjunii/colab-sd`). If branch protection is enabled on `main`, the script automatically creates and merges a pull request with admin credentials so syncing is completely frictionless.
+The script automatically rebuilds `.toe` and `.tox`, updates the notebook, stages all files, and synchronizes to your GitHub repo (`wenjunii/colab-sd`). If branch protection is enabled on `main`, the script automatically creates and merges a pull request with admin credentials so syncing is completely frictionless.
 
 ---
 
 ## 📄 License
 
-This bridge is provided as an open tool for the TouchDesigner and creative coding community. Built with [StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion) and [TouchDesigner](https://derivative.ca/).
+This project is licensed under the [MIT License](LICENSE). Built with [StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion) and [TouchDesigner](https://derivative.ca/) for the creative coding and real-time generative art community.
