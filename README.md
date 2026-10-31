@@ -219,6 +219,8 @@ Output JPEG quality adapts without changing the selected dimensions. The frame b
 
 In an isolated Python 3.10 environment, install `requirements-test.txt`, then run `python -m unittest discover -s tests -v`. The model stand-ins need no GPU or downloaded weights. For CPU-only PyTorch, install `torch==2.5.1` from `https://download.pytorch.org/whl/cpu` before installing the requirements. These checks cover streaming, controls, recovery, frame limits, TouchDesigner callbacks, native build failure handling, notebook consistency, launcher ownership, and sync failures. Live Colab performance and image quality still require a GPU integration run.
 
+GPU integration verified on 2026-10-31 at 512 × 512 with an A100, Python 3.13.16, PyTorch 2.11.0+cu130, Torch-TensorRT 2.11.0, and TensorRT 10.15.1.29. Both UNets compiled completely into TensorRT and passed numerical comparison against native output. WebSocket checks decoded non-flat JPEG frames in both modes, changed image denoise strength from 0.2 to 0.9, blended prompts, and switched back to text generation. Larger profiles and other GPU types need their own integration checks. The compiler exports standard attention operations and uses the validated FP16 builder configuration to avoid FlashAttention conversion and strong-typing compiler failures.
+
 Windows setup:
 
 ```powershell
