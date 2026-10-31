@@ -34,10 +34,17 @@ class TensorRTChecks(unittest.TestCase):
             adapter(torch.zeros(2, 4, 2, 2), torch.tensor([999, 500]), torch.zeros(2, 77, 8))
 
     def test_compile_requires_a_real_engine_and_validates_outputs(self):
+        self_attention, cross_attention, export_attention = object(), object(), object()
+
         class FakeUNet(torch.nn.Module):
             config = SimpleNamespace(in_channels=4, cross_attention_dim=8)
             device = torch.device('cpu')
             dtype = torch.float32
+            attn_processors = {'block.attn1.processor': self_attention,
+                               'block.attn2.processor': cross_attention}
+
+            def set_attn_processor(self, processors):
+                self.attn_processors = processors
 
             def forward(self, sample, timestep, encoder_hidden_states=None, **kwargs):
                 return (sample * 0.5,)
@@ -55,7 +62,8 @@ class TensorRTChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='colab-sd-trt-test-') as name:
             root = Path(name).resolve()
             self.assertTrue(root.is_relative_to(Path(tempfile.gettempdir()).resolve()))
-            with patch.dict('sys.modules', {'torch_tensorrt': module}), \
+            with patch.dict('sys.modules', {'torch_tensorrt': module,
+                                           'diffusers.models.attention_processor': SimpleNamespace(AttnProcessor=lambda: export_attention)}), \
                     patch.object(backend, 'package_requirement'), \
                     patch.object(torch.cuda, 'is_available', return_value=True), \
                     patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)), \
@@ -65,6 +73,9 @@ class TensorRTChecks(unittest.TestCase):
                 self.assertTrue(compiler.call_args.kwargs['require_full_compilation'])
                 self.assertTrue(compiler.call_args.kwargs['use_explicit_typing'])
                 self.assertNotIn('enabled_precisions', compiler.call_args.kwargs)
+                processors = compiler.call_args.args[0].model.attn_processors
+                self.assertIs(processors['block.attn1.processor'], self_attention)
+                self.assertIs(processors['block.attn2.processor'], export_attention)
                 self.assertEqual(compiler.call_args.kwargs['inputs'][0].shape, (2, 4, 2, 4))
                 compiler.side_effect = lambda graph, **kwargs: graph
                 with self.assertRaisesRegex(RuntimeError, 'no TensorRT engines'):

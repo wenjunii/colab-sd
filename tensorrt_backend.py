@@ -103,6 +103,15 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
     print(f'>>> Compiling TensorRT UNet: {width} x {height}, batch {batch_size}. First use can take several minutes.', flush=True)
     with torch.no_grad():
         expected = graph(*inputs).detach()
+        # Export selects CUDA FlashAttention for cross-attention, whose unequal
+        # query/key sequence lengths lack a Torch-TensorRT converter. Export
+        # those layers as equivalent matmul/softmax operations instead. Keep
+        # self-attention's efficient processor and compare against the original.
+        from diffusers.models.attention_processor import AttnProcessor
+        unet.set_attn_processor({
+            name: AttnProcessor() if name.endswith('attn2.processor') else processor
+            for name, processor in unet.attn_processors.items()
+        })
         compiled = torch_tensorrt.compile(
             # Current Torch-TensorRT uses explicit typing. The UNet weights
             # and latents already carry FP16; timesteps remain FP32.
