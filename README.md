@@ -77,14 +77,14 @@ flowchart LR
 3. Execute cells 1 through 3.
 4. In **Cell 4 (Launch Server)**, configure the **1-Toggle Acceleration Switch**:
    * **`ENABLE_TENSORRT = False` (Default):** PyTorch Native FP16 without engine compilation.
-   * **`ENABLE_TENSORRT = True`:** TensorRT acceleration; first-time engine compilation can take several minutes per output size. Actual FPS and latency depend on GPU, resolution, and connection.
+   * **`ENABLE_TENSORRT = True`:** Installs a Torch-TensorRT release matching the existing PyTorch build, then compiles and validates the UNet for both modes. Requires Python 3.11+ and PyTorch 2.11+. First-time compilation can take several minutes per output size. TinyVAE stays in PyTorch. Actual FPS and latency depend on GPU, resolution, and connection.
 5. Run Cell 4. The server downloads SD-Turbo weights (~2.5GB), completes GPU warmup, and displays your live WebSocket endpoint:
    ```text
    StreamDiffusion is ready
    Paste this URL into TouchDesigner:
    wss://recorder-thunder-example.trycloudflare.com/ws/stream
    ```
-6. Re-running the launch cell stops its own earlier server and tunnel. Interrupting the cell stops both. Startup and tunnel discovery have timeouts; logs remain in `bridge_logs/server.log` and `bridge_logs/tunnel.log`. An unrelated process on port 8000 is reported rather than killed.
+6. Re-running the launch cell stops its own earlier server and tunnel. Interrupting the cell stops both. Startup and tunnel discovery have timeouts; logs remain in `bridge_logs/server.log` and `bridge_logs/tunnel.log`. TensorRT installation logs are in `bridge_logs/tensorrt-setup.log`. An unrelated process on port 8000 is reported rather than killed. If requested TensorRT setup or compilation fails, startup stops rather than announcing a PyTorch fallback as ready. Uncheck TensorRT to explicitly use native mode.
 
 Setup checks out [StreamDiffusion revision `b623251`](https://github.com/cumulo-autumn/StreamDiffusion/commit/b623251dc055e1fd858d53509aa43e09dfc5cdc0) and installs core dependencies together using the compatibility pins in `colab_setup.py`. The notebook bundles the server, shared protocol, and launcher sources; no manual helper uploads are required.
 
@@ -147,7 +147,7 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 | **Audio -> Denoise Gain** | Float (0.0–1.0) | `0.3` | Dynamic denoise strength boost proportional to audio peak amplitude. |
 | **Audio Beat Threshold** | Float (0.1–1.0) | `0.8` | Audio level threshold that triggers an automatic seed randomization on kick drum peaks. |
 | **Status** | String (Display) | `Disconnected` | Live connection status and streaming FPS. |
-| **Acceleration Engine** | String (Display) | `--` | Backend for the active mode: PyTorch, TensorRT, or PyTorch with a TensorRT VAE. |
+| **Acceleration Engine** | String (Display) | `--` | `PyTorch (FP16)` or `TensorRT (UNet)` for the current mode. TinyVAE remains in PyTorch. |
 | **Effective FPS** | String (Display) | `0.0 FPS` | Measured video delivery rate received from Colab. |
 | **Colab Inference** | String (Display) | `-- ms` | Server-side GPU forward pass latency per frame. |
 | **Network Ping (RTT)**| String (Display) | `-- ms` | Application ping/pong time, measured every two seconds, separate from frame generation. |
@@ -205,7 +205,8 @@ Output JPEG quality adapts without changing the selected dimensions. The frame b
 ## 💡 Tips & Troubleshooting
 
 * **Reloading the Component in TouchDesigner:** If you make changes or pull an update while TouchDesigner is running, select **File $\rightarrow$ Revert to Saved**, or drag and drop `StreamDiffusion_Remote.tox` into your project. TouchDesigner does not reload `.toe` files from disk automatically while open.
-* **Checking Engine Status:** The **Acceleration Engine** readout follows the current mode. Text generation may use TensorRT while shared img2img uses the PyTorch UNet plus a TensorRT VAE; this is reported as `PyTorch + TensorRT VAE` rather than claiming full TensorRT acceleration.
+* **Checking Engine Status:** Both modes use `TensorRT (UNet)` only after their separately compiled UNets pass output validation. Text generation uses batch one and the two-timestep image stream uses batch two. TinyVAE remains in PyTorch. Caches are separated by output dimensions, batch size, GPU capability, and software versions.
+* **Old TensorRT Fallback:** `No module named 'polygraphy'` with CUDA 13 indicates the old StreamDiffusion installer path: it only handles CUDA 11/12 and can return without installing anything. The updated notebook uses [Torch-TensorRT](https://docs.pytorch.org/TensorRT/getting_started/installation.html), preserves the installed PyTorch/CUDA build, and verifies the actual backend before creating a tunnel. Update the notebook and rerun its write-server and launch cells; installing Polygraphy alone does not modernize the old compiler.
 * **Measuring Improvements:** Compare Effective FPS, Server Frame Processing, Frame Round Trip, and Network Ping at the same output size and GPU type. The single-image batch reduces wasted text-generation work; live FPS and end-to-end latency still need measurement on your Colab connection. Start at 384 or 512, then try 256 for speed.
 * **Connection Status:** Uploads pause until the socket is connected and the server confirms the requested mode and output size. The FPS readout falls to zero if no frames arrive. HTTP(S) tunnel addresses pasted into the URL control normalize to WS(S) and receive `/ws/stream` when no path was supplied.
 * **Matching Versions:** Update the Colab notebook and TouchDesigner component together. A mismatched handshake displays a version message instead of leaving uploads silently paused.
@@ -217,6 +218,8 @@ Output JPEG quality adapts without changing the selected dimensions. The frame b
 ## Development checks
 
 In an isolated Python 3.10 environment, install `requirements-test.txt`, then run `python -m unittest discover -s tests -v`. The model stand-ins need no GPU or downloaded weights. For CPU-only PyTorch, install `torch==2.5.1` from `https://download.pytorch.org/whl/cpu` before installing the requirements. These checks cover streaming, controls, recovery, frame limits, TouchDesigner callbacks, native build failure handling, notebook consistency, launcher ownership, and sync failures. Live Colab performance and image quality still require a GPU integration run.
+
+GPU integration verified on 2026-10-31 at 512 × 512 with an A100, Python 3.13.16, PyTorch 2.11.0+cu130, Torch-TensorRT 2.11.0, and TensorRT 10.15.1.29. Both UNets compiled completely into TensorRT and passed numerical comparison against native output. WebSocket checks decoded non-flat JPEG frames in both modes, changed image denoise strength from 0.2 to 0.9, blended prompts, and switched back to text generation. Larger profiles and other GPU types need their own integration checks. The compiler exports standard attention operations and uses the validated FP16 builder configuration to avoid FlashAttention conversion and strong-typing compiler failures.
 
 Windows setup:
 
@@ -236,6 +239,7 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `bridge_protocol.py` | Shared output presets, control validation, and input frame assembly |
 | `colab_server.py` | Model loading, recovery, generation, health, and WebSocket streaming |
 | `colab_setup.py` / `colab_launcher.py` | Colab environment setup and owned server/tunnel lifecycle |
+| `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, output validation, and per-mode engine caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
 | `generate_notebook.py` | Self-contained notebook generation and freshness checking |
 

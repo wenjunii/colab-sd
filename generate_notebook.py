@@ -24,6 +24,9 @@ Run SD-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare
 Supports text/image generation, prompt blending, audio controls, telemetry, snapshots,
 and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 512.
 Resolution changes reload model buffers; TensorRT engines are cached per width/height.
+TensorRT uses matching Torch-TensorRT wheels on Python 3.11+ / PyTorch 2.11+.
+Both modes compile and validate their UNets; TinyVAE stays in PyTorch. Requested
+acceleration never silently falls back to a successful native startup.
 
 Setup pins the StreamDiffusion source revision and core compatibility dependencies.
 Re-run the launch cell to replace its own previous server and tunnel. Interrupt it to stop both.
@@ -45,6 +48,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         ('server_code', 'colab_server.py', 'server.py'),
         ('protocol_code', 'bridge_protocol.py', 'bridge_protocol.py'),
         ('launcher_code', 'colab_launcher.py', 'colab_launcher.py'),
+        ('tensorrt_code', 'tensorrt_backend.py', 'tensorrt_backend.py'),
     ):
         write_server += variable + ' = ' + json.dumps((root / source_name).read_text(encoding='utf-8')) + '\n'
         write_server += f"with open({target_name!r}, 'w', encoding='utf-8') as handle:\n    handle.write({variable})\n"
