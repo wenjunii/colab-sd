@@ -61,10 +61,6 @@ from fastapi.responses import HTMLResponse
 
 # Disable autograd globally for fast inference
 torch.set_grad_enabled(False)
-if torch.cuda.is_available():
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
 
 sys.path.append('.')
 try:
@@ -105,49 +101,6 @@ current_neg_prompt = "blurry, low quality, distorted, watermark"
 current_mode = "txt2img"
 current_seed = 42
 current_strength = 0.6
-current_steps = 2
-
-def get_t_list_for_steps(steps, mode="txt2img", strength=0.6):
-    s = int(steps)
-    if mode == "txt2img":
-        if s == 1:
-            return [45]
-        elif s == 4:
-            return [0, 16, 32, 45]
-        else: # 2 steps (balanced default)
-            return [32, 45]
-    else: # img2img
-        t0 = max(5, min(44, int(45 - strength * 40)))
-        if s == 1:
-            return [t0]
-        elif s == 4:
-            t1 = int(t0 + (45 - t0) * 0.33)
-            t2 = int(t0 + (45 - t0) * 0.66)
-            return [t0, t1, t2, 45]
-        else: # 2 steps
-            return [t0, 45]
-
-def apply_steps(new_steps):
-    global current_steps, stream_txt2img, stream_img2img
-    try:
-        s = int(new_steps)
-        if s not in (1, 2, 4):
-            s = 2
-        current_steps = s
-        
-        t_list_txt = get_t_list_for_steps(current_steps, "txt2img")
-        if stream_txt2img is not None and hasattr(stream_txt2img, "stream"):
-            stream_txt2img.stream.t_list = t_list_txt
-            stream_txt2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
-            
-        t_list_img = get_t_list_for_steps(current_steps, "img2img", current_strength)
-        if stream_img2img is not None and hasattr(stream_img2img, "stream"):
-            stream_img2img.stream.t_list = t_list_img
-            stream_img2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
-            
-        logger.info(f"Updated diffusion steps to {current_steps}: txt2img={t_list_txt}, img2img={t_list_img}")
-    except Exception as e:
-        logger.error(f"Error applying steps: {e}")
 
 def set_seed(s):
     torch.manual_seed(s)
@@ -213,10 +166,10 @@ def apply_strength(new_strength):
             if hasattr(stream_img2img, "update_strength"):
                 stream_img2img.update_strength(current_strength)
             elif hasattr(stream_img2img, "stream") and hasattr(stream_img2img.stream, "t_list"):
-                new_t_list = get_t_list_for_steps(current_steps, "img2img", current_strength)
-                stream_img2img.stream.t_list = new_t_list
+                t0 = max(5, min(44, int(45 - current_strength * 40)))
+                stream_img2img.stream.t_list = [t0, 45]
                 stream_img2img.prepare(prompt=current_prompt_a, num_inference_steps=50)
-                logger.info(f"Updated img2img denoise strength to {current_strength:.2f} (t_index_list={new_t_list})")
+                logger.info(f"Updated img2img denoise strength to {current_strength:.2f} (t_index_list={[t0, 45]})")
     except Exception as e:
         logger.error(f"Error updating strength: {e}")
 
@@ -255,35 +208,22 @@ def run_model_inference(input_image=None):
             return stream_txt2img()
         return None
 
-def tensor_to_bgr(t):
-    """
-    Zero-copy GPU post-processor:
-    Performs RGB->BGR reordering, clamping [0, 1] -> [0, 255] uint8 conversion
-    DIRECTLY in CUDA VRAM before transferring a contiguous uint8 buffer to CPU.
-    Saves 5-8ms of CPU latency compared to PIL/NumPy pipelines.
-    """
-    if isinstance(t, Image.Image):
-        return cv2.cvtColor(np.array(t), cv2.COLOR_RGB2BGR)
-    if hasattr(t, "detach"):
-        t = t.detach()
-        if t.ndim == 4:
-            t = t[0]
-        t_bgr = t[[2, 1, 0], :, :]
-        return (t_bgr.permute(1, 2, 0).clamp(0, 1).mul(255).to(torch.uint8).cpu().numpy())
-    return np.array(t)
-
 def compress_frame(arr_bgr, max_bytes=48000):
     """
-    Fast single-pass JPEG compression at Q55 (typically 22KB-35KB for 512x512).
-    Avoids multi-pass CPU overhead.
+    Dynamically compresses JPEG to guarantee payload stays strictly under TouchDesigner's
+    64KB WebSocket limit (typically around 25KB-42KB).
     """
-    ret, buf = cv2.imencode('.jpg', arr_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 55])
-    if ret and len(buf) <= max_bytes:
-        return buf.tobytes()
+    for q in (60, 50, 40, 30):
+        ret, buf = cv2.imencode('.jpg', arr_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        if ret and len(buf) <= max_bytes:
+            return buf.tobytes()
     h, w = arr_bgr.shape[:2]
     small = cv2.resize(arr_bgr, (int(w * 0.8), int(h * 0.8)), interpolation=cv2.INTER_AREA)
-    ret, buf = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
-    return buf.tobytes() if ret else b""
+    for q in (45, 30, 20):
+        ret, buf = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        if ret and len(buf) <= max_bytes:
+            return buf.tobytes()
+    return buf.tobytes()
 
 def load_pipeline():
     global stream_txt2img, stream_img2img, pipeline_ready, active_engine
@@ -291,13 +231,12 @@ def load_pipeline():
     accel_mode = "tensorrt" if enable_tensorrt else "none"
     print(f">>> Initializing StreamDiffusion (SD-Turbo) on {device.upper()} with acceleration='{accel_mode}' (Engine: {active_engine})...")
 
-    # 1. Text-to-Image pipeline: dynamic t_index_list based on current_steps
-    t_init_txt = get_t_list_for_steps(current_steps, "txt2img")
-    print(f">>> Initializing Text-to-Image pipeline (t_index_list={t_init_txt}, steps={current_steps})...")
+    # 1. Text-to-Image pipeline: [0, 16, 32, 45] produces full, coherent, prompt-matching frames
+    print(">>> Initializing Text-to-Image pipeline (t_index_list=[0, 16, 32, 45])...")
     try:
         stream_txt2img = StreamDiffusionWrapper(
             model_id_or_path="stabilityai/sd-turbo",
-            t_index_list=t_init_txt,
+            t_index_list=[0, 16, 32, 45],
             frame_buffer_size=1,
             width=512,
             height=512,
@@ -305,7 +244,6 @@ def load_pipeline():
             acceleration=accel_mode,
             engine_dir="engines",
             mode="txt2img",
-            output_type="pt",
             use_lcm_lora=False,
             use_tiny_vae=True,
             cfg_type="none",
@@ -320,14 +258,13 @@ def load_pipeline():
             active_engine = "PyTorch (FP16)"
             stream_txt2img = StreamDiffusionWrapper(
                 model_id_or_path="stabilityai/sd-turbo",
-                t_index_list=t_init_txt,
+                t_index_list=[0, 16, 32, 45],
                 frame_buffer_size=1,
                 width=512,
                 height=512,
                 warmup=5,
                 acceleration="none",
                 mode="txt2img",
-                output_type="pt",
                 use_lcm_lora=False,
                 use_tiny_vae=True,
                 cfg_type="none",
@@ -339,27 +276,15 @@ def load_pipeline():
             raise
     set_seed(current_seed)
 
-    # Enable Tensor Core channels_last memory format optimization
-    if device == "cuda" and stream_txt2img is not None and hasattr(stream_txt2img, "stream"):
-        try:
-            core_pipe = stream_txt2img.stream.pipe
-            if hasattr(core_pipe, "unet"):
-                core_pipe.unet.to(memory_format=torch.channels_last)
-            if hasattr(core_pipe, "vae") and core_pipe.vae:
-                core_pipe.vae.to(memory_format=torch.channels_last)
-            logger.info("Activated channels_last memory format for Tensor Core acceleration.")
-        except Exception:
-            pass
-
-    # 2. Image-to-Image / StreamV2V pipeline: initial t_index_list based on current_steps and strength
-    t_init_img = get_t_list_for_steps(current_steps, "img2img", current_strength)
-    print(f">>> Initializing Image-to-Image / StreamV2V pipeline (t_index_list={t_init_img}, strength={current_strength:.2f})...")
+    # 2. Image-to-Image / StreamV2V pipeline: initial t_index_list based on current_strength
+    t0_init = max(5, min(44, int(45 - current_strength * 40)))
+    print(f">>> Initializing Image-to-Image / StreamV2V pipeline (t_index_list=[{t0_init}, 45], strength={current_strength:.2f})...")
     try:
         from streamdiffusion import StreamDiffusion
         core_pipe = stream_txt2img.stream.pipe
         stream_core = StreamDiffusion(
             pipe=core_pipe,
-            t_index_list=t_init_img,
+            t_index_list=[t0_init, 45],
             torch_dtype=core_pipe.dtype,
             width=512,
             height=512,
@@ -378,27 +303,30 @@ def load_pipeline():
             def update_prompt(self, prompt):
                 self.stream.update_prompt(prompt)
             def update_strength(self, strength: float):
-                new_t_list = get_t_list_for_steps(current_steps, "img2img", strength)
+                # Dynamically maps strength [0.1..1.0] to start timestep index [44..5]
+                t0 = max(5, min(44, int(45 - strength * 40)))
+                new_t_list = [t0, 45]
                 if getattr(self.stream, "t_list", None) != new_t_list:
                     self.stream.t_list = new_t_list
                     self.stream.prepare(prompt=current_prompt_a, num_inference_steps=50)
                     logger.info(f"Updated img2img denoise strength to {strength:.2f} (t_index_list={new_t_list})")
             def __call__(self, image):
-                return self.stream(image)
+                x_output = self.stream(image)
+                pil_out = postprocess_image(x_output, output_type="pil")
+                return pil_out[0] if isinstance(pil_out, list) else pil_out
 
         stream_img2img = SharedImg2ImgWrapper(stream_core)
     except Exception as e:
         print(">>> Fallback to standalone img2img wrapper:", e)
         stream_img2img = StreamDiffusionWrapper(
             model_id_or_path="stabilityai/sd-turbo",
-            t_index_list=t_init_img,
+            t_index_list=[t0_init, 45],
             frame_buffer_size=1,
             width=512,
             height=512,
             warmup=5,
             acceleration="none",
             mode="img2img",
-            output_type="pt",
             use_lcm_lora=False,
             use_tiny_vae=True,
             cfg_type="none",
@@ -452,7 +380,6 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         "type": "welcome",
         "message": "StreamDiffusion server connected",
         "engine": active_engine,
-        "steps": current_steps,
         "prompt_a": current_prompt_a,
         "prompt_b": current_prompt_b,
         "blend": current_prompt_blend,
@@ -463,7 +390,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         "temp": temp_s,
     }))
 
-    CHUNK_SIZE = 8192
+    CHUNK_SIZE = 2048
     frame_counter = 0
 
     async def send_chunked_frame(ws: WebSocket, jpg_bytes: bytes):
@@ -500,7 +427,14 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     inf_ms = (time.time() - t0) * 1000
 
                     if output_tensor is not None:
-                        arr_bgr = tensor_to_bgr(output_tensor)
+                        if isinstance(output_tensor, Image.Image):
+                            arr_bgr = cv2.cvtColor(np.array(output_tensor), cv2.COLOR_RGB2BGR)
+                        elif hasattr(output_tensor, "cpu"):
+                            arr = (output_tensor.detach().squeeze().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                            arr_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+                        else:
+                            arr_bgr = np.array(output_tensor)
+
                         jpg_bytes = compress_frame(arr_bgr)
                         await send_chunked_frame(websocket, jpg_bytes)
 
@@ -511,7 +445,6 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                 await websocket.send_text(json.dumps({
                                     "type": "stats",
                                     "engine": active_engine,
-                                    "steps": current_steps,
                                     "inf_ms": round(inf_ms, 1),
                                     "vram": v_str,
                                     "temp": t_str,
@@ -574,10 +507,6 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         if new_strength is not None and abs(float(new_strength) - current_strength) > 0.01:
                             apply_strength(float(new_strength))
 
-                        new_steps = data.get("steps")
-                        if new_steps is not None and int(new_steps) != current_steps:
-                            apply_steps(new_steps)
-
                     elif msg_type == "ping":
                         await websocket.send_text(json.dumps({"type": "pong", "time": time.time()}))
 
@@ -622,7 +551,14 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                 output = await loop.run_in_executor(None, run_model_inference, in_pil)
                                 inf_ms = (time.time() - t0) * 1000
 
-                                out_bgr = tensor_to_bgr(output)
+                                if isinstance(output, Image.Image):
+                                    out_bgr = cv2.cvtColor(np.array(output), cv2.COLOR_RGB2BGR)
+                                elif hasattr(output, "cpu"):
+                                    out_arr = (output.detach().squeeze().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                                    out_bgr = cv2.cvtColor(out_arr, cv2.COLOR_RGB2BGR)
+                                else:
+                                    out_bgr = np.array(output)
+
                                 out_bytes = compress_frame(out_bgr)
                                 await send_chunked_frame(websocket, out_bytes)
 
@@ -633,7 +569,6 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                         await websocket.send_text(json.dumps({
                                             "type": "stats",
                                             "engine": active_engine,
-                                            "steps": current_steps,
                                             "inf_ms": round(inf_ms, 1),
                                             "vram": v_str,
                                             "temp": t_str,
@@ -664,4 +599,4 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", ws_per_message_deflate=False)
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

@@ -3,8 +3,6 @@ pageindex 0 3
 Serverurl 67108928 wss://samples-null-chance-beverage.trycloudflare.com/ws/stream
 Connect 67108928 off
 Mode 67108928 txt2img
-Steps 67108928 2
-Flowmode 67108928 double
 Source 67108928 in1
 Displaymode 67108928 ai
 Prompta 67108928 "cinematic cyberpunk cityscape, neon lights, 8k, detailed"
