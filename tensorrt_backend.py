@@ -123,6 +123,8 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
             # Decompose Diffusers' baddbmm into supported primitive operations.
             enable_experimental_decompositions=True,
             require_full_compilation=True, workspace_size=2 * 1024**3,
+            # Torch-TensorRT only stores/reuses refittable engines in its cache.
+            immutable_weights=False,
             cache_built_engines=True, reuse_cached_engines=True, engine_cache_dir=str(cache),
         )
         engine_count = sum(type(module).__name__ in ('TorchTensorRTModule', 'PythonTorchTensorRTModule')
