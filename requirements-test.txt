@@ -1,8 +1,8 @@
 # Use an isolated environment. CPU-only torch wheels work for these model stand-ins.
-torch==2.5.1
+torch==2.13.0
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
 Pillow>=10,<13
-transformers==4.39.3
+transformers==5.10.1
 huggingface-hub==0.25.2
 fastapi==0.94.0
