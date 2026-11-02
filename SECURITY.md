@@ -2,15 +2,17 @@
 
 ## CPU checks
 
-`requirements-test.txt` is used by GitHub Actions and the offline model stand-ins. It uses Torch 2.13.0 and Transformers 5.10.1 to address the 27 Dependabot alerts reported against the previous Torch 2.5.1 and Transformers 4.39.3 pins. Transformers 5.10.1 requires Hugging Face Hub >=1.5,<2; keeping the old Hub 0.25.2 pin prevents installation. FastAPI is upgraded with its compatible Starlette dependency as well.
+`requirements-test.txt` is used by GitHub Actions and the offline model stand-ins. It uses Torch 2.13.0 and Transformers 5.10.1 to address the 27 Dependabot alerts reported against the previous Torch 2.5.1 and Transformers 4.39.3 pins. Transformers 5.10.1 requires Hugging Face Hub >=1.5,<2; keeping the old Hub 0.25.2 pin prevents installation. FastAPI is upgraded with its compatible Starlette dependency as well. The wider installed-package audit also requires Pillow >=13, filelock >=4.2.1, and setuptools >=84.1.0. Patched Pillow and filelock require Python 3.11, which is now the development and CI baseline.
 
-The workflow installs these requirements with the official PyTorch CPU wheel index in one resolver transaction, runs `pip check` before the tests, and audits the installed environment with `pip-audit`. Future Torch updates therefore also update the wheel selected by CI, without a second version pin in the workflow. The audit reports newly published vulnerabilities as CI failures instead of suppressing alerts.
+The workflow installs these requirements with the official PyTorch CPU wheel index in one resolver transaction, runs `pip check` before the tests, and audits the installed environment with `audit_dependencies.py` and `pip-audit`. Future Torch updates therefore also update the wheel selected by CI, without a second version pin in the workflow. The audit reports newly published vulnerabilities as CI failures instead of suppressing alerts.
+
+`pip-audit` cannot look up Torch's local `+cpu` version on PyPI. The audit helper therefore creates an exact inventory of the installed packages, maps only the official Torch `+cpu` build to its base release, and audits that inventory without resolving or installing packages again. Other local builds are rejected. Skipped or missing audit results fail the check so an unaudited package cannot silently pass.
 
 To audit the installed development environment:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pip-audit==2.10.1
-.\.venv\Scripts\python.exe -m pip_audit
+.\.venv\Scripts\python.exe audit_dependencies.py
 ```
 
 ## Colab GPU runtime: known legacy dependencies
