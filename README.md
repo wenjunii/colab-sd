@@ -217,20 +217,22 @@ Output JPEG quality adapts without changing the selected dimensions. The frame b
 
 ## Development checks
 
-In an isolated Python 3.10 environment, install `requirements-test.txt`, then run `python -m unittest discover -s tests -v`. The model stand-ins need no GPU or downloaded weights. For CPU-only PyTorch, install `torch==2.5.1` from `https://download.pytorch.org/whl/cpu` before installing the requirements. These checks cover streaming, controls, recovery, frame limits, TouchDesigner callbacks, native build failure handling, notebook consistency, launcher ownership, and sync failures. Live Colab performance and image quality still require a GPU integration run.
+In an isolated Python 3.11 environment, install `requirements-test.txt` with the PyTorch CPU wheel index shown below, then run `python -m unittest discover -s tests -v`. The model stand-ins need no GPU or downloaded weights. The requirements select Torch 2.13.0, Transformers 5.10.1, a compatible Hugging Face Hub 1.x, FastAPI 0.162.0, and patched Pillow/filelock/setuptools versions. Python 3.11 is required by the patched Pillow and filelock releases; recreate older development environments. These checks cover streaming, controls, recovery, frame limits, TouchDesigner callbacks, native build failure handling, notebook consistency, launcher ownership, sync failures, and dependency audit coverage. Live Colab performance and image quality still require a GPU integration run.
 
 GPU integration verified on 2026-10-31 at 512 × 512 with an A100, Python 3.13.16, PyTorch 2.11.0+cu130, Torch-TensorRT 2.11.0, and TensorRT 10.15.1.29. Both UNets compiled completely into TensorRT and passed numerical comparison against native output. WebSocket checks decoded non-flat JPEG frames in both modes, changed image denoise strength from 0.2 to 0.9, blended prompts, and switched back to text generation. Larger profiles and other GPU types need their own integration checks. The compiler exports standard attention operations and uses the validated FP16 builder configuration to avoid FlashAttention conversion and strong-typing compiler failures.
 
 Windows setup:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-.\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-test.txt --extra-index-url https://download.pytorch.org/whl/cpu
+.\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-`python generate_notebook.py --check` detects a stale notebook. GitHub Actions runs the CPU suite and this source consistency check on pushes and pull requests; native TouchDesigner archive builds are verified locally on Windows.
+`python generate_notebook.py --check` detects a stale notebook. GitHub Actions runs `pip check`, the CPU suite, this source consistency check, and `python audit_dependencies.py` on pushes and pull requests. The audit checks all installed packages with `pip-audit`, maps the official Torch `+cpu` build to its base PyPI release for vulnerability lookup, and fails on skipped packages. Native TouchDesigner archive builds are verified locally on Windows.
+
+The CPU test dependencies are separate from the Colab GPU environment. `colab_setup.py` still pins the legacy StreamDiffusion-compatible Diffusers 0.24.0, Transformers 4.39.3, Hugging Face Hub 0.25.2, and Accelerate 0.30.1 stack. Those legacy versions include known security vulnerabilities; updating the test requirements does not remediate the GPU runtime. Use the fixed SD-Turbo/TinyVAE model sources in this project and avoid untrusted model repositories, checkpoint files, or remote model code. Migrating the GPU stack needs a separate compatibility and image-generation check in both PyTorch and TensorRT modes. See [SECURITY.md](SECURITY.md) for the dependency scope and remaining work.
 
 Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automatically, or accepts `--td-bin "C:\Program Files\Derivative\TouchDesigner\bin"` (also configurable with `TOUCHDESIGNER_BIN`). Both archives build in a temporary staging folder before replacing the previous outputs. The standalone archive includes its root custom parameter files.
 
