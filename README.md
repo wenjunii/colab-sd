@@ -114,7 +114,7 @@ python3.11 workstation.py setup
 python3.11 workstation.py start --advertise-host 192.168.1.50
 ```
 
-Replace `192.168.1.50` with the workstation's LAN/VPN IP. Setup creates `.workstation/venv` and a pinned upstream checkout; it does not install packages into your normal Python environment. The default wheel is **Torch 2.13.0 / CUDA 13.0**. To select another compatible official wheel combination, use `setup --cuda cu129 --torch-version 2.13.0`. Setup and startup both check that PyTorch can use the GPU. The first server startup downloads the models and warms both generation modes.
+Replace `192.168.1.50` with the workstation's LAN/VPN IP. Setup creates `.workstation/venv` and a pinned upstream checkout; it does not install packages into your normal Python environment. The default wheel is **Torch 2.13.0 / CUDA 13.0**, installed together with a compatible TorchVision wheel. To select another compatible official wheel combination, use `setup --cuda cu129 --torch-version 2.13.0`. Setup and startup both check that PyTorch can use the GPU. The first server startup downloads the models and warms both generation modes.
 
 The ready message prints two values to copy into TouchDesigner:
 
@@ -273,6 +273,8 @@ Output JPEG quality adapts without changing the selected dimensions. The frame b
 In an isolated Python 3.11 environment, install `requirements-test.txt` with the PyTorch CPU wheel index shown below, then run `python -m unittest discover -s tests -v`. The model stand-ins need no GPU or downloaded weights. The requirements select Torch 2.13.0, Transformers 5.10.1, a compatible Hugging Face Hub 1.x, FastAPI 0.162.0, and patched Pillow/filelock/setuptools versions. Python 3.11 is required by the patched Pillow and filelock releases; recreate older development environments. These checks cover streaming, controls, recovery, frame limits, TouchDesigner callbacks, native build failure handling, notebook consistency, launcher ownership, sync failures, and dependency audit coverage. Live Colab performance and image quality still require a GPU integration run.
 
 GPU integration verified on 2026-10-31 at 512 × 512 with an A100, Python 3.13.16, PyTorch 2.11.0+cu130, Torch-TensorRT 2.11.0, and TensorRT 10.15.1.29. Both UNets compiled completely into TensorRT and passed numerical comparison against native output. WebSocket checks decoded non-flat JPEG frames in both modes, changed image denoise strength from 0.2 to 0.9, blended prompts, and switched back to text generation. Larger profiles and other GPU types need their own integration checks. The compiler exports standard attention operations and uses the validated FP16 builder configuration to avoid FlashAttention conversion and strong-typing compiler failures.
+
+Windows workstation GPU integration verified on 2026-11-02 with an RTX 3080 Ti Laptop GPU (16 GB), NVIDIA driver 617.42, Python 3.11, Torch 2.13.0+cu130, and TorchVision 0.28.0+cu130. Real launcher checks passed over both direct loopback WebSockets and a public TLS Cloudflare tunnel, including incorrect-token rejection, authenticated text/image generation, prompt blending, denoise strengths 0.2/0.9, and resizing from 512 × 512 to 384 × 384. JPEG dimensions and spatial image variation were checked after buffer warmup. All 67 CPU/ASGI checks pass on Windows and Linux; Linux GPU inference and RTX TensorRT need separate hardware validation. These checks do not establish end-to-end TouchDesigner FPS or test a second physical LAN client.
 
 Windows setup:
 

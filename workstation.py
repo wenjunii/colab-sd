@@ -75,7 +75,7 @@ def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION):
     subprocess.run(['git', '-C', str(upstream), 'fetch', '--depth', '1', 'origin', UPSTREAM_REVISION], check=True)
     subprocess.run(['git', '-C', str(upstream), 'checkout', '--detach', UPSTREAM_REVISION], check=True)
     run_pip(python, 'install', '--upgrade', 'pip', 'setuptools>=84.1.0')
-    run_pip(python, 'install', f'torch=={torch_version}+{cuda}',
+    run_pip(python, 'install', f'torch=={torch_version}+{cuda}', 'torchvision',
             '--index-url', f'https://download.pytorch.org/whl/{cuda}')
     gpu_check(python, upstream)
     # Keep legacy model dependencies inside this environment. Do not install
@@ -87,7 +87,7 @@ def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION):
     run_pip(python, 'check')
     subprocess.run([str(python), '-c',
                     'import sys; sys.path.insert(0, sys.argv[1]); import colab_server; '
-                    'assert colab_server.StreamDiffusionWrapper is not None, "StreamDiffusion wrapper failed to import"',
+                    'from utils.wrapper import StreamDiffusionWrapper',
                     str(PROJECT)], cwd=upstream, check=True)
     marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION, 'ready': True,
                                  'torch': torch_version, 'cuda': cuda}) + '\n', encoding='utf-8')
