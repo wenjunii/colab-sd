@@ -1,7 +1,7 @@
 ?
 active 17 on parent().par.Connect
 netaddress 17 "" parent().par.Serverurl
-port 0 443
+port 17 443 op("parexec_controls").module.server_port()
 callbacks 0 websocket1_callbacks
 language 0 text
 ?

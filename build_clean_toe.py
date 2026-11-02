@@ -12,7 +12,7 @@ from bridge_protocol import OUTPUT_PRESETS
 def resolution_parameter():
     options = ' '.join(f'{value} "{label}"' for value, label, _, _ in OUTPUT_PRESETS)
     return ('772804879 Resolution "Output Resolution / Ratio" 1 1 0 0 1 1 1 2 0 "" "" '
-            f'StreamDiffusion 4097 {len(OUTPUT_PRESETS)} {options} 3')
+            f'StreamDiffusion 4097 {len(OUTPUT_PRESETS)} {options} 5')
 
 SCRIPT_RECEIVER_CODE = '''import cv2
 import numpy as np
@@ -123,15 +123,15 @@ def onConnect(dat):
     fps_frame_count = 0
     p_status = getattr(parent().par, 'Status', None)
     if p_status is not None:
-        p_status.val = 'Connected (Streaming)'
+        p_status.val = 'Connected (Waiting for server)'
     parent().store('can_send', True)
     parent().store('connected', True)
     parent().store('server_ready', False)
+    parent().store('handshake_complete', False)
     parent().store('last_frame_receive', time.perf_counter())
     parent().store('last_send_time', 0.0)
     parent().store('last_ping_time', 0.0)
-    print('[StreamDiffusion] WebSocket Connected to Colab!')
-    send_control(force=True)
+    print('[StreamDiffusion] WebSocket connected to server.')
 
 def onDisconnect(dat):
     p_status = getattr(parent().par, 'Status', None)
@@ -139,6 +139,7 @@ def onDisconnect(dat):
         p_status.val = last_error or 'Disconnected'
     parent().store('connected', False)
     parent().store('server_ready', False)
+    parent().store('handshake_complete', False)
     p_eng = getattr(parent().par, 'Engine', None)
     if p_eng is not None:
         p_eng.val = '--'
@@ -175,7 +176,7 @@ def onReceiveText(dat, rowIndex, message):
             return
         msg_type = data.get('type', '')
         if msg_type == 'welcome' and data.get('protocol') != 1:
-            last_error = 'Bridge versions differ: reload the updated Colab notebook and component'
+            last_error = 'Bridge versions differ: update the server and TouchDesigner component'
             parent().store('server_ready', False)
             p_status = getattr(parent().par, 'Status', None)
             if p_status is not None:
@@ -184,6 +185,16 @@ def onReceiveText(dat, rowIndex, message):
             if p_connect is not None:
                 p_connect.val = False
             print('[StreamDiffusion]', last_error)
+            return
+        if msg_type == 'auth_required':
+            token_par = getattr(parent().par, 'Accesstoken', None)
+            token = str(token_par.eval()).strip() if token_par is not None else ''
+            if token:
+                dat.sendText(json.dumps({'type': 'auth', 'token': token}))
+            else:
+                last_error = 'Enter the Workstation Access Token, then reconnect'
+                parent().par.Status = last_error
+                parent().par.Connect = False
             return
         if msg_type == 'error':
             last_error = str(data.get('status', 'Server error'))
@@ -197,6 +208,8 @@ def onReceiveText(dat, rowIndex, message):
                 if p_mode is not None and data.get('mode') in ('txt2img', 'img2img'):
                     p_mode.val = data['mode']
             print('[StreamDiffusion]', last_error)
+            if data.get('code') == 'unauthorized':
+                parent().par.Connect = False
         elif msg_type in ('welcome', 'configured'):
             actual = (data.get('mode'), data.get('width'), data.get('height'))
             requested = parent().fetch('requested_configuration', actual)
@@ -217,6 +230,8 @@ def onReceiveText(dat, rowIndex, message):
                 p_eng.val = data['engine']
 
         if msg_type == 'welcome':
+            parent().store('handshake_complete', True)
+            send_control(force=True)
             vram = data.get('vram', '--')
             temp = data.get('temp', '--')
             p_vram = getattr(parent().par, 'Vram', None)
@@ -328,6 +343,8 @@ def output_size():
 
 
 def send_control(force=False, strength_override=None):
+    if not parent().fetch('handshake_complete', True):
+        return
     p = parent().par
     mode = 'img2img' if getattr(p, 'Mode', None) and p.Mode.eval() == 'img2img' else 'txt2img'
     
@@ -482,7 +499,8 @@ def onFrameStart(frame):
         p_fps = getattr(parent().par, 'Fps', None)
         if p_fps is not None:
             p_fps.val = '0.0 FPS'
-    if ws and ws.par.active.eval() and now - parent().fetch('last_ping_time', 0.0) >= 2.0:
+    if (ws and ws.par.active.eval() and parent().fetch('handshake_complete', False)
+            and now - parent().fetch('last_ping_time', 0.0) >= 2.0):
         parent().store('last_ping_time', now)
         try:
             ws.sendText(json.dumps({'type': 'ping', 'sent_at': now}))
@@ -586,16 +604,38 @@ from urllib.parse import urlsplit, urlunsplit
 # par - the parameter that changed
 # prev - the previous value
 
+def server_port():
+    try:
+        parsed = urlsplit(str(parent().par.Serverurl.eval()).strip())
+        return parsed.port or (443 if parsed.scheme in ('https', 'wss') else 80)
+    except ValueError:
+        return 443
+
 def onValueChange(par, prev):
     try:
-        if par.name == 'Serverurl':
+        if par.name == 'Serverlocation':
+            previous = 'workstation' if str(prev) in ('workstation', '1') else 'colab'
+            parent().store(previous + '_server_url', str(parent().par.Serverurl.eval()))
+            parent().par.Connect = False
+            location = str(par.eval())
+            default = 'ws://127.0.0.1:8000/ws/stream' if location == 'workstation' else ''
+            parent().par.Serverurl = parent().fetch(location + '_server_url', default)
+            parent().par.Status = 'Server location changed; enable Connect when ready'
+        elif par.name == 'Accesstoken':
+            parent().par.Connect = False
+            parent().par.Status = 'Access token changed; reconnect to authenticate'
+        elif par.name == 'Serverurl':
             value = str(par.eval()).strip()
             if value:
                 parsed = urlsplit(value)
                 scheme = {'http': 'ws', 'https': 'wss'}.get(parsed.scheme, parsed.scheme)
-                if scheme not in ('ws', 'wss') or not parsed.netloc:
+                try:
+                    port = parsed.port
+                except ValueError:
+                    port = 0
+                if scheme not in ('ws', 'wss') or not parsed.hostname or port == 0 or parsed.username is not None:
                     parent().par.Connect = False
-                    parent().par.Status = 'Paste a valid Colab WebSocket URL'
+                    parent().par.Status = 'Paste a valid server WebSocket URL'
                     return
                 path = '/ws/stream' if parsed.path in ('', '/') else parsed.path
                 normalized = urlunsplit((scheme, parsed.netloc, path, parsed.query, ''))
@@ -611,7 +651,7 @@ def onValueChange(par, prev):
         elif par.name == 'Connect':
             if par.eval() and not str(parent().par.Serverurl.eval()).strip():
                 par.val = False
-                parent().par.Status = 'Paste the Colab WebSocket URL first'
+                parent().par.Status = 'Paste the server WebSocket URL first'
             elif not par.eval():
                 p_status = getattr(parent().par, 'Status', None)
                 if p_status is not None:
@@ -698,41 +738,45 @@ def save_snapshot():
 
 CPARM_CONTENT = f'''?
 pages 1 StreamDiffusion
-772804868 Serverurl "Colab WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 0
-772804867 Connect "Connect to Colab" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
-772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 2
+772804879 Serverlocation "Server Location" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 colab "Google Colab" workstation "RTX Workstation (Windows / Linux)" 0
+772804868 Serverurl "Server WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
+772804868 Accesstoken "Workstation Access Token" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 2
+772804867 Connect "Connect to Server" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 3
+772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 4
 {resolution_parameter()}
-772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 4
-772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 5
-772804868 Prompta "Prompt A" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 6
-772804868 Promptb "Prompt B" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 7
-772804865 Promptblend "Prompt Blend (A <-> B)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
-772804868 Negprompt "Negative Prompt" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
-772804869 Submitprompt "Submit Prompts" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
-772804865 Strength "Denoise Strength" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
-772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 12
-772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 13
-772804869 Snapshot "Take Snapshot (PNG+JSON)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 14
-772804868 Snapdir "Snapshot Directory" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 15
-772804867 Audiorx "Audio Reactivity" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 16
-772804868 Audiochop "Audio CHOP Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 17
-772804865 Audstrength "Audio -> Denoise Gain" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 18
-772804865 Audseedthresh "Audio Beat Seed Threshold" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 19
-772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
-772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
-772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
-772804868 Gputime "Colab Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
-772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
-772804868 Vram "Colab GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
-772804868 Gputemp "Colab GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
-772804868 Servertime "Server Frame Processing" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 27
-772804868 Frametime "Frame Round Trip" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 28
+772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 6
+772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 7
+772804868 Prompta "Prompt A" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
+772804868 Promptb "Prompt B" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 9
+772804865 Promptblend "Prompt Blend (A <-> B)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 10
+772804868 Negprompt "Negative Prompt" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 11
+772804869 Submitprompt "Submit Prompts" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 12
+772804865 Strength "Denoise Strength" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 13
+772804866 Seed Seed 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 14
+772804869 Randomseed "Randomize Seed" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 15
+772804869 Snapshot "Take Snapshot (PNG+JSON)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 16
+772804868 Snapdir "Snapshot Directory" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 17
+772804867 Audiorx "Audio Reactivity" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 18
+772804868 Audiochop "Audio CHOP Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 19
+772804865 Audstrength "Audio -> Denoise Gain" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 20
+772804865 Audseedthresh "Audio Beat Seed Threshold" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 21
+772804868 Status Status 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 22
+772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
+772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
+772804868 Gputime "GPU Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
+772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
+772804868 Vram "GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 27
+772804868 Gputemp "GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 28
+772804868 Servertime "Server Frame Processing" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 29
+772804868 Frametime "Frame Round Trip" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 30
 ?
 '''
 
 PARM_CONTENT = '''?
 pageindex 0 3
+Serverlocation 67108928 colab
 Serverurl 67108928 ""
+Accesstoken 67108928 ""
 Connect 67108928 off
 Mode 67108928 txt2img
 Resolution 67108928 512
@@ -846,7 +890,11 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (project / 'StreamDiffusion_Remote.parm').write_text(PARM_CONTENT, encoding='utf-8', newline='\n')
     (component / 'in_audio.n').write_text(IN_AUDIO_N, encoding='utf-8', newline='\n')
     (component / 'in_audio.parm').write_text(IN_AUDIO_PARM, encoding='utf-8', newline='\n')
-    controls = 'Serverurl Connect Mode Resolution Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh'
+    (component / 'websocket1.parm').write_text(
+        '?\nactive 17 on parent().par.Connect\nnetaddress 17 "" parent().par.Serverurl\n'
+        'port 17 443 op("parexec_controls").module.server_port()\n'
+        'callbacks 0 websocket1_callbacks\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')

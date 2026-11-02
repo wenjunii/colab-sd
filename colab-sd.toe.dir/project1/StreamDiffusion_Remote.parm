@@ -1,6 +1,8 @@
 ?
 pageindex 0 3
+Serverlocation 67108928 colab
 Serverurl 67108928 ""
+Accesstoken 67108928 ""
 Connect 67108928 off
 Mode 67108928 txt2img
 Resolution 67108928 512

@@ -222,7 +222,7 @@ class WebSocketChecks(unittest.IsolatedAsyncioTestCase):
                     await until(lambda: any(message.get('code') == 'configuration_failed' for message in ws.text))
                 error = next(message for message in ws.text if message.get('code') == 'configuration_failed')
                 self.assertNotIn(private_detail, json.dumps(error))
-                self.assertIn('Colab logs', error['status'])
+                self.assertIn('server logs', error['status'])
                 self.assertIn(private_detail, '\n'.join(logs.output))
             finally:
                 await ws.close()
