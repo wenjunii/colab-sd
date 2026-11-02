@@ -1,4 +1,4 @@
-"""Own and monitor the Colab server and tunnel without blocking on log pipes."""
+"""Own and monitor a bridge server and optional tunnel on Colab or a workstation."""
 import json
 import math
 import os
@@ -13,10 +13,23 @@ import urllib.request
 
 
 class BridgeSession:
-    def __init__(self, tensorrt=False, max_fps=60, root=None, startup_timeout=None, tunnel_timeout=90):
+    def __init__(self, tensorrt=False, max_fps=60, root=None, startup_timeout=None, tunnel_timeout=90,
+                 host='0.0.0.0', port=8000, tunnel=True, advertise_host=None,
+                 server_script='server.py', python_executable=None, cloudflared=None, access_token=None):
         if not math.isfinite(float(max_fps)) or not 1 <= float(max_fps) <= 120:
             raise ValueError('Maximum FPS must be between 1 and 120')
         self.root = Path(root or Path.cwd()).resolve()
+        if not 1 <= int(port) <= 65535:
+            raise ValueError('Port must be between 1 and 65535')
+        self.host, self.port = host, int(port)
+        self.tunnel = bool(tunnel)
+        self.advertise_host = advertise_host or ('127.0.0.1' if host == '0.0.0.0' else '::1' if host == '::' else host)
+        self.health_host = '127.0.0.1' if host == '0.0.0.0' else '::1' if host == '::' else host
+        self.server_script = (self.root / server_script).resolve()
+        self.python_executable = str(python_executable or sys.executable)
+        self.cloudflared = str(cloudflared or self.root / ('cloudflared.exe' if os.name == 'nt' else 'cloudflared'))
+        self.access_token = access_token
+        self.session_id = os.urandom(16).hex()
         self.tensorrt = bool(tensorrt)
         self.max_fps = float(max_fps)
         self.startup_timeout = startup_timeout or (1800 if tensorrt else 600)
@@ -26,6 +39,11 @@ class BridgeSession:
         self.writers = {}
         self.tunnel_url = None
         self.tunnel_tail = ''
+
+    def endpoint(self, host=None, scheme='http', path=''):
+        host = host or self.health_host
+        host = f'[{host}]' if ':' in host and not host.startswith('[') else host
+        return f'{scheme}://{host}:{self.port}{path}'
 
     def _spawn(self, name, command, env=None):
         logs = self.root / 'bridge_logs'
@@ -64,11 +82,15 @@ class BridgeSession:
             self.pump_logs()
             self._check_processes()
             try:
-                with urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2) as response:
+                with urllib.request.urlopen(self.endpoint(path='/health'), timeout=2) as response:
                     status = json.load(response)
                     if status.get('ready') is True:
+                        # A process that wins a bind race must not be published
+                        # as this launcher's successfully started GPU server.
+                        if status.get('session_id') != self.session_id:
+                            raise RuntimeError('Health endpoint belongs to a different server session.')
                         if self.tensorrt and not str(status.get('engine', '')).startswith('TensorRT'):
-                            raise RuntimeError('TensorRT was requested but is not active. Inspect bridge_logs/server.log; no tunnel was started.')
+                            raise RuntimeError('TensorRT was requested but is not active. Inspect bridge_logs/server.log; no endpoint was published.')
                         return
             except (OSError, ValueError, urllib.error.URLError):
                 pass
@@ -90,21 +112,34 @@ class BridgeSession:
         self.tunnel_url = None
         self.tunnel_tail = ''
         try:
-            with socket.create_connection(('127.0.0.1', 8000), timeout=0.5):
-                raise RuntimeError('Port 8000 is already in use. Stop the previous server before launching this session.')
+            with socket.create_connection((self.health_host, self.port), timeout=0.5):
+                raise RuntimeError(f'Port {self.port} is already in use. Stop the previous server before launching this session.')
         except OSError:
             pass
         try:
-            if self.tensorrt:
-                from tensorrt_backend import ensure_dependencies
-                ensure_dependencies(self.root)
             environment = os.environ.copy()
             environment['MAX_STREAM_FPS'] = str(self.max_fps)
             environment['ENABLE_TENSORRT'] = '1' if self.tensorrt else '0'
-            self._spawn('server', [sys.executable, '-u', 'server.py'], environment)
+            environment['BRIDGE_HOST'] = self.host
+            environment['BRIDGE_PORT'] = str(self.port)
+            environment['BRIDGE_SESSION_ID'] = self.session_id
+            if self.access_token is not None:
+                environment['BRIDGE_ACCESS_TOKEN'] = self.access_token
+            if self.tensorrt:
+                if Path(self.python_executable).resolve() == Path(sys.executable).resolve():
+                    from tensorrt_backend import ensure_dependencies
+                    ensure_dependencies(self.root)
+                else:
+                    subprocess.run([self.python_executable, '-c',
+                                    'import sys; sys.path.insert(0, sys.argv[1]); '
+                                    'from tensorrt_backend import ensure_dependencies; ensure_dependencies(sys.argv[2])',
+                                    str(self.server_script.parent), str(self.root)], check=True, env=environment)
+            self._spawn('server', [self.python_executable, '-u', str(self.server_script)], environment)
             self.wait_for_ready()
-            self._spawn('tunnel', [str(self.root / 'cloudflared'), 'tunnel', '--url', 'http://127.0.0.1:8000'])
-            return self.wait_for_tunnel()
+            if self.tunnel:
+                self._spawn('tunnel', [self.cloudflared, 'tunnel', '--url', self.endpoint()])
+                return self.wait_for_tunnel()
+            return self.endpoint(self.advertise_host, 'ws', '/ws/stream')
         except BaseException:
             self.stop()
             raise

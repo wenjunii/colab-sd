@@ -15,10 +15,20 @@ To audit the installed development environment:
 .\.venv\Scripts\python.exe audit_dependencies.py
 ```
 
-## Colab GPU runtime: known legacy dependencies
+## GPU runtimes: known legacy dependencies
 
 `colab_setup.py` embeds a separate runtime setup in the generated notebook. It still installs Diffusers 0.24.0, Transformers 4.39.3, Hugging Face Hub 0.25.2, and Accelerate 0.30.1 for compatibility with the pinned upstream StreamDiffusion wrapper. The runtime also retains Colab's installed CUDA build of PyTorch, which may be older than the CPU test version. These versions are not security-current. A clean Dependabot view for the test manifest must not be interpreted as a security audit of the Colab runtime.
 
 The bridge uses SD-Turbo and TinyVAE; it does not offer a client control for selecting arbitrary model repositories or enabling remote model code. Continue to use trusted model sources and do not load untrusted Python, pickle/checkpoint files, tokenizers, or model repositories into this runtime. Model-source restrictions reduce exposure but do not patch vulnerable dependencies.
 
 The remaining GPU migration must update the dependency stack together, verify model loading and non-flat image output in both generation modes, check prompt blending and denoise strength, and validate both TensorRT UNets against native outputs. Test-only dependency updates do not establish GPU compatibility. The last GPU validation and its exact software versions are recorded in the README.
+
+## Workstation access
+
+`workstation.py setup` creates its own environment rather than modifying system Python. It reuses the same legacy model dependency pins listed above, with a selected CUDA Torch wheel and patched Pillow/filelock/setuptools. The CPU dependency audit does not establish security of this GPU environment.
+
+The workstation launcher requires a persistent random token, stored in `.workstation/access-token` (owner-only permissions on Linux; inherited user-folder permissions on Windows). The client must authenticate before receiving a welcome message, submitting controls, receiving video, or taking the single controller slot. The token is not placed in URLs, server arguments, health responses, snapshots, or server/tunnel logs. It is displayed in the launching terminal for pairing.
+
+Use direct `ws://` only over trusted LAN/VPN connections. For internet use, choose the TLS Cloudflare transport or a VPN; the token does not encrypt plain WebSocket traffic. Cloudflare mode binds to loopback unless explicitly overridden. No firewall or router settings are modified automatically. The existing Colab setup remains compatible with a blank token; it does not gain workstation authentication automatically.
+
+TouchDesigner saves the entered access token in the project/component parameters. Clear it before sharing a paired `.toe` or `.tox` file. Distributed project builds contain an empty token. Only connect to server URLs you trust.

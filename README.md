@@ -1,6 +1,6 @@
 # ⚡ StreamDiffusion Remote TouchDesigner Bridge (`colab-sd`)
 
-Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** (Stability AI SD-Turbo) running on a remote **Google Colab GPU** (T4 / L4 / A100) directly into local **TouchDesigner** via a secure, zero-config **Cloudflare Tunnel**.
+Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** (Stability AI SD-Turbo) running on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
 
 ![TouchDesigner](https://img.shields.io/badge/TouchDesigner-2023%2F2025-orange?logo=derivative)
 ![Model](https://img.shields.io/badge/Model-SD--Turbo%20(up%20to%201024x768)-blue)
@@ -12,11 +12,12 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 
 ## 🌟 Key Features
 
-* **Cloud GPU Powered:** Run diffusion on a Google Colab GPU. TouchDesigner uses the local GPU for its TOP network and display.
+* **Two Server Locations:** Choose **Google Colab** or **RTX Workstation (Windows / Linux)**. Each location remembers its own server URL. TouchDesigner uses the local GPU for its TOP network and display; the server runs diffusion.
+* **Workstation Pairing:** A dedicated Python environment, CUDA preflight, configurable listening address/port, persistent access token, and optional Cloudflare tunnel. Text/image generation, prompts, audio, resolution, snapshots, and telemetry use the same protocol for either location.
 * **Two Generation Modes:**
   * **Text-to-Image (`txt2img`):** Continuous visual stream driven by prompts, blend weights, and seeds, using a single-image SD-Turbo batch.
   * **Image-to-Image / Video-to-Video (`img2img`):** Real-time interactive stylization driven by TouchDesigner TOPs (external generators like `Noise TOP`, live webcam feed, or movie files).
-* **Output Resolution / Ratio:** Select from 16 square, landscape, and portrait presets, up to **1024 × 768** or **768 × 1024**. **512 × 512** remains the default. This changes actual Colab generation dimensions, rather than resizing the received image.
+* **Output Resolution / Ratio:** Select from 16 square, landscape, and portrait presets, up to **1024 × 768** or **768 × 1024**. **512 × 512** remains the default. This changes actual server generation dimensions, rather than resizing the received image.
 * **Dual-Prompt Latent Morphing:** Crossfade between **Prompt A** and **Prompt B** using **Prompt Blend** ($0.0 \dots 1.0$). A bounded embedding cache avoids re-running CLIP for blend, seed, and repeated control updates. Strength schedule changes still require preparation.
 * **Negative Prompt Control:** Retained for compatibility and snapshot metadata. SD-Turbo runs without classifier-free guidance and does not apply negative conditioning; see the [model card](https://huggingface.co/stabilityai/sd-turbo).
 * **Interactive Denoise Strength Slider:** Dynamically shift between preserving subtle original contours ($0.2$) and dramatic AI reinterpretation ($0.8+$) in real time.
@@ -30,7 +31,7 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
   * **Split Wipe (50/50):** Half-and-half split view for precise texture alignment.
   * **Input Only:** Preview the input even before connecting to Colab.
 * **Snapshot Recorder:** Saves received frames as PNG in `captures/`, with JSON metadata for current controls, actual dimensions, engine, and telemetry. Received frames have already undergone JPEG compression; converting them to PNG does not recover lost detail. Filenames include microseconds to avoid overwriting rapid captures.
-* **Remote Hardware Telemetry HUD:** Live monitoring of Colab GPU inference time (ms), GPU VRAM allocation, GPU temperature (°C), network round-trip ping (ms), and effective video FPS.
+* **Remote Hardware Telemetry HUD:** Live monitoring of server GPU inference time (ms), GPU VRAM allocation, GPU temperature (°C), network round-trip ping (ms), and effective video FPS.
 * **Adaptive "Ping-Pong" Flow Control:** TouchDesigner sends the next input after receiving an output, with bounded newest-frame queues to reduce stale-frame buildup.
 * **Zero-Config Cloudflare Tunneling:** Encrypted `wss://` WebSockets over Cloudflare Edge (`trycloudflare.com`). No port forwarding, public IP, or VPN required.
 * **Small TLS Packets:** Bidirectional chunking uses input payloads up to 4096 bytes and output payloads up to 2048 bytes, plus their headers, to avoid the previously observed large-packet errors.
@@ -56,8 +57,9 @@ flowchart LR
         WS_DAT <===>|"TLS wss://...trycloudflare.com"| CF["Cloudflare Edge"]
     end
 
-    subgraph COLAB["⚡ Google Colab (GPU)"]
+    subgraph COLAB["⚡ Colab or Windows/Linux RTX workstation"]
         CF <===>|"HTTP / WebSocket :8000"| FASTAPI["FastAPI / Uvicorn Server"]
+        WS_DAT <===>|"Direct LAN / VPN ws://workstation:8000"| FASTAPI
         FASTAPI --> REASS["Frame Reassembly"]
         REASS --> PIPE["StreamDiffusion (SD-Turbo)\nPrompt Embedding Blending\nDynamic t_index_list"]
         PIPE --> COMP["Dynamic JPEG Compression"]
@@ -90,13 +92,62 @@ Setup checks out [StreamDiffusion revision `b623251`](https://github.com/cumulo-
 
 ---
 
+### 1B. Run on an RTX workstation instead of Colab
+
+Install **Git**, **Python 3.11**, and a current **NVIDIA driver** on the workstation. TouchDesigner can stay on another computer. The workstation needs internet access for the initial Python/model downloads. A separately installed CUDA toolkit alone does not establish compatibility: the NVIDIA driver must support the selected [PyTorch CUDA wheel](https://pytorch.org/get-started/locally/).
+
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/wenjunii/colab-sd.git
+cd colab-sd
+py -3.11 workstation.py setup
+py -3.11 workstation.py start --advertise-host 192.168.1.50
+```
+
+Linux terminal:
+
+```bash
+git clone https://github.com/wenjunii/colab-sd.git
+cd colab-sd
+python3.11 workstation.py setup
+python3.11 workstation.py start --advertise-host 192.168.1.50
+```
+
+Replace `192.168.1.50` with the workstation's LAN/VPN IP. Setup creates `.workstation/venv` and a pinned upstream checkout; it does not install packages into your normal Python environment. The default wheel is **Torch 2.13.0 / CUDA 13.0**. To select another compatible official wheel combination, use `setup --cuda cu129 --torch-version 2.13.0`. Setup and startup both check that PyTorch can use the GPU. The first server startup downloads the models and warms both generation modes.
+
+The ready message prints two values to copy into TouchDesigner:
+
+```text
+Server WebSocket URL: ws://192.168.1.50:8000/ws/stream
+Workstation Access Token: <generated pairing token>
+```
+
+For direct connections, allow the selected TCP port (default **8000**) through the workstation firewall for your private LAN/VPN. Direct `ws://` is unencrypted: use a trusted LAN or a VPN. The launcher does not change firewall rules. For the same computer, use `--advertise-host 127.0.0.1`. `--bind` selects the listening interface, and `--port 8765` changes both the listener and the printed URL.
+
+For internet access without router port forwarding, start a TLS tunnel instead:
+
+```powershell
+py -3.11 workstation.py start --transport cloudflare
+```
+
+On Linux, replace `py -3.11` with `python3.11`. The launcher finds `cloudflared` on PATH or downloads the official Windows/Linux executable, binds the server to loopback by default, and prints a temporary `wss://...trycloudflare.com/ws/stream` URL plus the access token. [Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) are intended for testing/development; LAN/VPN or a managed tunnel is preferable for a permanent installation.
+
+Keep the server terminal running (locally, through SSH, or in your workstation remote desktop session). **Ctrl+C** stops its server and tunnel. The pairing token persists in `.workstation/access-token`; server/tunnel logs are under `.workstation/StreamDiffusion/bridge_logs/`. `--runtime PATH` selects another dedicated installation folder and must be passed to both setup and start. Updating this repository updates the bridge scripts used at the next launch; rerun setup when dependency or upstream pins change.
+
+Native **PyTorch FP16** is the default. `start --tensorrt` requests matching Torch-TensorRT wheels and compilation of both UNets, with strict failure instead of silent fallback. TensorRT compatibility and image quality must be checked on each workstation GPU/software combination; the existing A100 Colab validation does not establish RTX or native Windows TensorRT compatibility. Start with FP16 when configuring a new workstation.
+
+Workstation mode currently uses the same legacy StreamDiffusion model dependency pins as Colab. Its separate environment and access token do not patch those dependencies; the remaining migration is described in [SECURITY.md](SECURITY.md).
+
 ### 2. Connect TouchDesigner
 
 1. Open `colab-sd.toe` in TouchDesigner (or drag `StreamDiffusion_Remote.tox` into your project).
 2. Select the **`StreamDiffusion_Remote`** component.
 3. In the parameter dialog:
-   * **Colab WebSocket URL:** Paste the `wss://.../ws/stream` address from Colab.
-   * **Connect to Colab:** Toggle **On**.
+   * **Server Location:** Choose **Google Colab** or **RTX Workstation (Windows / Linux)**. This selects a saved connection URL, independently of Generation Mode.
+   * **Server WebSocket URL:** Paste the server's `ws://.../ws/stream` LAN/VPN URL or `wss://.../ws/stream` tunnel URL. Custom ports are applied automatically.
+   * **Workstation Access Token:** Paste the token printed by the workstation launcher. Leave blank for the existing Colab setup. Tokens are sent only in response to an authentication challenge, before any controls/video are exchanged.
+   * **Connect to Server:** Toggle **On**.
    * **Generation Mode:** Choose `Text to Image` or `Image / Noise to Image`.
    * **Prompt A / Prompt B & Blend:** Set your creative prompts and blend between them with the slider.
 4. Video streams directly to `null1` in real time with live telemetry!
@@ -126,8 +177,10 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **Colab WebSocket URL** | String | `wss://...` | Cloudflare `wss://` endpoint generated by Cell 4 in Colab. |
-| **Connect to Colab** | Toggle | `Off` | Connects or disconnects the WebSocket stream. |
+| **Server Location** | Menu | `Google Colab` | Switches between remembered Colab and RTX workstation URLs. |
+| **Server WebSocket URL** | String | Empty | Server LAN/VPN `ws://` or Cloudflare `wss://` endpoint, including `/ws/stream`. |
+| **Workstation Access Token** | String | Empty | Pairing token printed by the workstation launcher; blank for Colab. |
+| **Connect to Server** | Toggle | `Off` | Connects or disconnects the WebSocket stream. |
 | **Generation Mode** | Menu | `Text-to-Video` | `txt2img` (continuous AI synthesis) or `img2img` (audio/visual stylization). |
 | **Output Resolution / Ratio** | Menu | `512 × 512` | 16 presets for 1:1, 4:3, 3:4, 16:9, and 9:16, up to 1024 × 768 or 768 × 1024. Changing size reloads the Colab pipeline. |
 | **Input Source** | Menu | `External Input` | `External Input (in1)` (wired cable), `Webcam (cam_in)`, or `Internal Noise`. |
@@ -149,12 +202,12 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 | **Status** | String (Display) | `Disconnected` | Live connection status and streaming FPS. |
 | **Acceleration Engine** | String (Display) | `--` | `PyTorch (FP16)` or `TensorRT (UNet)` for the current mode. TinyVAE remains in PyTorch. |
 | **Effective FPS** | String (Display) | `0.0 FPS` | Measured video delivery rate received from Colab. |
-| **Colab Inference** | String (Display) | `-- ms` | Server-side GPU forward pass latency per frame. |
+| **GPU Inference** | String (Display) | `-- ms` | Server-side GPU forward pass latency per frame. |
 | **Network Ping (RTT)**| String (Display) | `-- ms` | Application ping/pong time, measured every two seconds, separate from frame generation. |
 | **Server Frame Processing** | String (Display) | `-- ms` | Input JPEG decode, inference, output conversion, and JPEG encoding; excludes worker queue and network time. |
 | **Frame Round Trip** | String (Display) | `-- ms` | Approximate input-send-to-result time in img2img, including server work and network transport. Not camera-to-screen latency; watchdog retries can affect this estimate. |
-| **Colab GPU VRAM** | String (Display) | `--` | Remote GPU memory usage (e.g. `2.4/15.0GB (16%)`). |
-| **Colab GPU Temp** | String (Display) | `--` | Remote GPU core temperature (e.g. `46°C`). |
+| **GPU VRAM** | String (Display) | `--` | Remote GPU memory usage (e.g. `2.4/15.0GB (16%)`). |
+| **GPU Temp** | String (Display) | `--` | Remote GPU core temperature (e.g. `46°C`). |
 
 ---
 
@@ -241,6 +294,7 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `bridge_protocol.py` | Shared output presets, control validation, and input frame assembly |
 | `colab_server.py` | Model loading, recovery, generation, health, and WebSocket streaming |
 | `colab_setup.py` / `colab_launcher.py` | Colab environment setup and owned server/tunnel lifecycle |
+| `workstation.py` | Isolated Windows/Linux CUDA setup, pairing token, and LAN/VPN/Cloudflare launch |
 | `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, output validation, and per-mode builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
 | `generate_notebook.py` | Self-contained notebook generation and freshness checking |

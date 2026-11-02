@@ -2,6 +2,7 @@ import os
 import sys
 import traceback
 import gc
+import hmac
 
 # 1. Compatibility shims for huggingface_hub
 import huggingface_hub
@@ -94,6 +95,7 @@ except Exception:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("StreamDiffusionServer")
 app = FastAPI()
+access_token = os.environ.get('BRIDGE_ACCESS_TOKEN', '')
 
 stream_txt2img = None
 stream_img2img = None
@@ -405,7 +407,7 @@ def load_pipeline():
     global stream_txt2img, stream_img2img, pipeline_ready, active_engine, applied_prompt_state
     global pipeline_revision, img2img_engine
     if StreamDiffusionWrapper is None:
-        raise RuntimeError("StreamDiffusion is not installed. Run the notebook setup cell first.")
+        raise RuntimeError("StreamDiffusion is not installed. Run Colab setup or workstation.py setup first.")
     pipeline_revision += 1
     prompt_embedding_cache.clear()
     applied_prompt_state = None
@@ -522,7 +524,7 @@ def index():
     <html>
         <head><title>StreamDiffusion TouchDesigner Server</title></head>
         <body style="font-family: sans-serif; padding: 40px; background: #121212; color: #fff;">
-            <h2>StreamDiffusion (SD-Turbo) Colab Server</h2>
+            <h2>StreamDiffusion (SD-Turbo) Bridge Server</h2>
             <p>Status: <span style="color: #0f0;">Running</span></p>
             <p>Connect your TouchDesigner client via the WebSocket endpoint: <code>/ws/stream</code></p>
         </body>
@@ -539,6 +541,8 @@ def health():
         "client_connected": active_client is not None,
         "last_error": last_pipeline_error,
         "requested_engine": "TensorRT" if enable_tensorrt else "PyTorch (FP16)",
+        "session_id": os.environ.get('BRIDGE_SESSION_ID'),
+        "authentication_required": bool(access_token),
     }, status_code=200 if pipeline_ready else 503)
 
 
@@ -547,9 +551,9 @@ def configuration_error(code):
     if code == "invalid_control":
         status = "Invalid controls: check output preset, mode, seed, strength, and blend values"
     elif pipeline_ready:
-        status = "Configuration failed; previous settings restored. See Colab logs for details"
+        status = "Configuration failed; previous settings restored. See server logs for details"
     else:
-        status = "Configuration failed; see Colab logs, then retry or restart the server"
+        status = "Configuration failed; see server logs, then retry or restart the server"
     return {"type": "error", "code": code, "status": status,
             "ready": pipeline_ready, "mode": current_mode,
             "width": output_width, "height": output_height}
@@ -557,20 +561,34 @@ def configuration_error(code):
 @app.websocket("/ws/stream")
 async def websocket_stream_endpoint(websocket: WebSocket):
     global active_client
+    # Authenticate before reserving the single controller or exposing frames.
+    # Tokens travel in a message, never a URL or a request log.
+    await websocket.accept()
+    if access_token:
+        await websocket.send_text(json.dumps({'type': 'auth_required'}))
+        try:
+            message = await asyncio.wait_for(websocket.receive(), timeout=10)
+            if message.get('type') == 'websocket.disconnect':
+                return
+            data = json.loads(message.get('text', ''))
+            authenticated = (isinstance(data, dict) and data.get('type') == 'auth'
+                             and isinstance(data.get('token'), str)
+                             and hmac.compare_digest(data['token'].encode(), access_token.encode()))
+        except (asyncio.TimeoutError, ValueError, TypeError, WebSocketDisconnect):
+            authenticated = False
+        if not authenticated:
+            await websocket.send_text(json.dumps({'type': 'error', 'code': 'unauthorized',
+                                                 'status': 'Access token missing or incorrect'}))
+            await websocket.close(code=1008)
+            return
     # Both modes share one mutable model; an additional controller must not
     # silently overwrite the active performer's prompts and resolution.
     if active_client is not None:
-        await websocket.accept()
         await websocket.send_text(json.dumps({"type": "error", "code": "server_busy",
                                              "status": "Server already has an active TouchDesigner client"}))
         await websocket.close(code=1013)
         return
     active_client = websocket
-    try:
-        await websocket.accept()
-    except BaseException:
-        active_client = None
-        raise
     logger.info("TouchDesigner client connected to WebSocket.")
     loop = asyncio.get_running_loop()
     send_lock = asyncio.Lock()
@@ -759,5 +777,6 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     # JPEG is already compressed; per-message deflate only adds CPU work.
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", ws_per_message_deflate=False,
+    uvicorn.run(app, host=os.environ.get('BRIDGE_HOST', '0.0.0.0'),
+                port=int(os.environ.get('BRIDGE_PORT', '8000')), log_level="info", ws_per_message_deflate=False,
                 ws_max_size=MAX_INPUT_FRAME_BYTES + 7)

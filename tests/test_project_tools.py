@@ -89,7 +89,8 @@ class ProjectToolsChecks(unittest.TestCase):
     def test_launcher_uses_readiness_response_and_fails_fast_on_process_exit(self):
         session = colab_launcher.BridgeSession(root=self.root)
         session.processes['server'] = SimpleNamespace(poll=lambda: None)
-        with patch.object(colab_launcher.urllib.request, 'urlopen', return_value=io.StringIO('{"ready": true}')):
+        status = json.dumps({'ready': True, 'session_id': session.session_id})
+        with patch.object(colab_launcher.urllib.request, 'urlopen', return_value=io.StringIO(status)):
             session.wait_for_ready()
         session.processes['server'] = SimpleNamespace(poll=lambda: 1)
         with self.assertRaisesRegex(RuntimeError, 'exited with code 1'):
@@ -105,7 +106,8 @@ class ProjectToolsChecks(unittest.TestCase):
         session = colab_launcher.BridgeSession(root=self.root, tensorrt=True)
         session.processes['server'] = SimpleNamespace(poll=lambda: None)
         with patch.object(colab_launcher.urllib.request, 'urlopen',
-                          return_value=io.StringIO('{"ready": true, "engine": "PyTorch (FP16)"}')):
+                          return_value=io.StringIO(json.dumps({'ready': True, 'engine': 'PyTorch (FP16)',
+                                                              'session_id': session.session_id}))):
             with self.assertRaisesRegex(RuntimeError, 'not active'):
                 session.wait_for_ready()
 
