@@ -18,11 +18,46 @@ import workstation
 
 class WorkstationChecks(unittest.TestCase):
     def test_cloudflare_protocol_cli_reaches_the_launcher(self):
-        with patch.object(workstation, 'start') as start:
-            self.assertEqual(workstation.main(['start', '--transport', 'cloudflare',
-                                              '--tunnel-protocol', 'http2']), 0)
-        self.assertEqual(start.call_args.args[0].tunnel_protocol, 'http2')
-        self.assertEqual(start.call_args.args[0].transport, 'cloudflare')
+        with tempfile.TemporaryDirectory() as name:
+            runtime = Path(name).resolve()
+            python = workstation.runtime_python(runtime)
+            python.parent.mkdir(parents=True)
+            python.touch()
+            wrapper = runtime / 'StreamDiffusion/utils/wrapper.py'
+            wrapper.parent.mkdir(parents=True)
+            wrapper.touch()
+            (runtime / 'workstation.json').write_text(json.dumps({
+                'managed_by': 'colab-sd', 'revision': workstation.UPSTREAM_REVISION, 'ready': True}))
+            for transport, option, expected in (('cloudflare', None, 'http2'),
+                                                 ('cloudflare', 'auto', 'auto'),
+                                                 ('cloudflare', 'quic', 'quic'),
+                                                 ('lan', None, 'http2')):
+                with self.subTest(transport=transport, protocol=option), \
+                        patch.object(workstation, 'gpu_check'), \
+                        patch.object(workstation, 'pairing_token', return_value='test-token'), \
+                        patch.object(workstation, 'cloudflared_binary', return_value='/cloudflared') as binary, \
+                        patch.object(workstation, 'BridgeSession') as launcher, patch('builtins.print'):
+                    arguments = ['start', '--runtime', str(runtime), '--tensorrt', '--resolution', '1024x768']
+                    if transport != 'lan':
+                        arguments += ['--transport', transport]
+                    if option is not None:
+                        arguments += ['--tunnel-protocol', option]
+                    self.assertEqual(workstation.main(arguments), 0)
+                    settings = launcher.call_args.kwargs
+                    self.assertEqual(settings['tunnel_protocol'], expected)
+                    self.assertEqual(settings['output_size'], (1024, 768))
+                    self.assertTrue(settings['tensorrt'])
+                    self.assertTrue(settings['reuse_engines'])
+                    self.assertEqual(settings['access_token'], 'test-token')
+                    self.assertEqual(settings['tunnel'], transport == 'cloudflare')
+                    self.assertEqual(settings['host'], '127.0.0.1' if settings['tunnel'] else '0.0.0.0')
+                    if settings['tunnel']:
+                        binary.assert_called_once_with(runtime)
+                    else:
+                        binary.assert_not_called()
+                    launcher.return_value.start.assert_called_once()
+                    launcher.return_value.wait.assert_called_once()
+                    launcher.return_value.stop.assert_called_once()
 
     def test_setup_installs_cuda_into_its_own_environment_and_marks_success(self):
         with tempfile.TemporaryDirectory() as name, patch('workstation.check_platform'), \
