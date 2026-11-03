@@ -35,6 +35,8 @@ and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 
 TouchDesigner's Video Quality menu controls JPEG traffic independently of generation
 size: Fast targets 48 KB/frame, Balanced 64 KB, and Detail allows larger frames.
 Balanced is the default. Delivery diagnostics are logged every ten seconds.
+Step 4 defaults `TUNNEL_PROTOCOL` to `http2`, which improved the tested Colab route.
+Compare `auto` or `quic` if your connection behaves differently; routing varies.
 Select `STARTUP_RESOLUTION` before launch. TensorRT locks that size by default;
 TouchDesigner adopts it when connecting. PyTorch supports live resolution changes.
 Each new TensorRT profile compiles once. Matching full-weight archives are loaded and
@@ -81,6 +83,8 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         # @markdown TensorRT may take several minutes to compile engines for a new output size.
         ENABLE_TENSORRT = False # @param {type:"boolean"}
         MAX_FPS = 60 # @param {type:"integer"}
+        # @markdown HTTP/2 improved the tested Colab route. Compare auto/quic if RTT remains high.
+        TUNNEL_PROTOCOL = "http2" # @param ["http2", "auto", "quic"]
         STARTUP_RESOLUTION = "512x512" # @param RESOLUTION_OPTIONS
         # @markdown Keep the size locked to avoid an accidental live engine build.
         LOCK_TENSORRT_RESOLUTION = True # @param {type:"boolean"}
@@ -102,7 +106,8 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         bridge_session = colab_launcher.BridgeSession(
             tensorrt=ENABLE_TENSORRT, max_fps=MAX_FPS, output_size=(width, height),
             allow_tensorrt_resize=not LOCK_TENSORRT_RESOLUTION,
-            engine_cache=engine_cache, reuse_engines=REUSE_TENSORRT_ENGINES)
+            engine_cache=engine_cache, reuse_engines=REUSE_TENSORRT_ENGINES,
+            tunnel_protocol=TUNNEL_PROTOCOL)
         print('TensorRT profile cache:', bridge_session.engine_cache)
         try:
             ws_url = bridge_session.start()

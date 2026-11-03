@@ -17,6 +17,13 @@ import workstation
 
 
 class WorkstationChecks(unittest.TestCase):
+    def test_cloudflare_protocol_cli_reaches_the_launcher(self):
+        with patch.object(workstation, 'start') as start:
+            self.assertEqual(workstation.main(['start', '--transport', 'cloudflare',
+                                              '--tunnel-protocol', 'http2']), 0)
+        self.assertEqual(start.call_args.args[0].tunnel_protocol, 'http2')
+        self.assertEqual(start.call_args.args[0].transport, 'cloudflare')
+
     def test_setup_installs_cuda_into_its_own_environment_and_marks_success(self):
         with tempfile.TemporaryDirectory() as name, patch('workstation.check_platform'), \
                 patch('workstation.shutil.which', return_value='git'), patch('workstation.venv.EnvBuilder'), \
