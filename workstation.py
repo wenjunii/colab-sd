@@ -13,7 +13,7 @@ import sys
 import urllib.request
 import venv
 
-from colab_launcher import BridgeSession
+from colab_launcher import BridgeSession, TUNNEL_PROTOCOLS
 from colab_setup import CORE_DEPENDENCIES, UPSTREAM_REVISION
 from bridge_protocol import OUTPUT_RESOLUTIONS
 
@@ -149,7 +149,8 @@ def start(arguments):
                             cloudflared=binary, access_token=token, startup_timeout=arguments.startup_timeout,
                             output_size=tuple(map(int, arguments.resolution.split('x'))),
                             allow_tensorrt_resize=arguments.allow_tensorrt_resize,
-                            engine_cache=arguments.engine_cache, reuse_engines=not arguments.no_engine_cache)
+                            engine_cache=arguments.engine_cache, reuse_engines=not arguments.no_engine_cache,
+                            tunnel_protocol=arguments.tunnel_protocol)
     try:
         url = session.start()
         print('\nStreamDiffusion workstation is ready. In TouchDesigner select RTX Workstation.')
@@ -173,6 +174,8 @@ def main(argv=None):
     launch = commands.add_parser('start', help='Run generation with LAN/VPN or Cloudflare transport')
     launch.add_argument('--runtime', type=Path, default=DEFAULT_RUNTIME)
     launch.add_argument('--transport', choices=('lan', 'cloudflare'), default='lan')
+    launch.add_argument('--tunnel-protocol', choices=TUNNEL_PROTOCOLS, default='auto',
+                        help='Cloudflare transport; compare http2 if auto/QUIC has high delivery delay')
     launch.add_argument('--bind', help='Listening address (default: all interfaces for LAN, loopback for Cloudflare)')
     launch.add_argument('--port', type=int, default=8000)
     launch.add_argument('--advertise-host', help='Workstation LAN/VPN IP or DNS name shown in the client URL')

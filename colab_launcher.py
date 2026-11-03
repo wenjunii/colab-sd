@@ -12,12 +12,15 @@ import urllib.error
 import urllib.request
 from bridge_protocol import resolution
 
+TUNNEL_PROTOCOLS = ('auto', 'http2', 'quic')
+
 
 class BridgeSession:
     def __init__(self, tensorrt=False, max_fps=60, root=None, startup_timeout=None, tunnel_timeout=90,
                  host='0.0.0.0', port=8000, tunnel=True, advertise_host=None,
                  server_script='server.py', python_executable=None, cloudflared=None, access_token=None,
-                 output_size=(512, 512), allow_tensorrt_resize=False, engine_cache=None, reuse_engines=True):
+                 output_size=(512, 512), allow_tensorrt_resize=False, engine_cache=None, reuse_engines=True,
+                 tunnel_protocol='auto'):
         if not math.isfinite(float(max_fps)) or not 1 <= float(max_fps) <= 120:
             raise ValueError('Maximum FPS must be between 1 and 120')
         self.root = Path(root or Path.cwd()).resolve()
@@ -25,6 +28,9 @@ class BridgeSession:
             raise ValueError('Port must be between 1 and 65535')
         self.host, self.port = host, int(port)
         self.tunnel = bool(tunnel)
+        if tunnel_protocol not in TUNNEL_PROTOCOLS:
+            raise ValueError('Tunnel protocol must be auto, http2, or quic')
+        self.tunnel_protocol = tunnel_protocol
         self.advertise_host = advertise_host or ('127.0.0.1' if host == '0.0.0.0' else '::1' if host == '::' else host)
         self.health_host = '127.0.0.1' if host == '0.0.0.0' else '::1' if host == '::' else host
         self.server_script = (self.root / server_script).resolve()
@@ -147,7 +153,9 @@ class BridgeSession:
             self._spawn('server', [self.python_executable, '-u', str(self.server_script)], environment)
             self.wait_for_ready()
             if self.tunnel:
-                self._spawn('tunnel', [self.cloudflared, 'tunnel', '--url', self.endpoint()])
+                print('Cloudflare tunnel protocol:', self.tunnel_protocol, flush=True)
+                self._spawn('tunnel', [self.cloudflared, 'tunnel', '--protocol',
+                                       self.tunnel_protocol, '--url', self.endpoint()])
                 return self.wait_for_tunnel()
             return self.endpoint(self.advertise_host, 'ws', '/ws/stream')
         except BaseException:

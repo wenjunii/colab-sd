@@ -102,6 +102,26 @@ class ProjectToolsChecks(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 session.wait_for_ready()
 
+    def test_tunnel_protocol_is_validated_and_forwarded_without_changing_gpu_settings(self):
+        with self.assertRaisesRegex(ValueError, 'Tunnel protocol'):
+            colab_launcher.BridgeSession(root=self.root, tunnel_protocol='invalid')
+        for protocol in colab_launcher.TUNNEL_PROTOCOLS:
+            with self.subTest(protocol=protocol):
+                session = colab_launcher.BridgeSession(root=self.root, tunnel_protocol=protocol,
+                                                       output_size=(1024, 768))
+                with patch.object(colab_launcher.socket, 'create_connection', side_effect=ConnectionRefusedError), \
+                        patch.object(session, '_spawn') as spawn, patch.object(session, 'wait_for_ready'), \
+                        patch.object(session, 'wait_for_tunnel', return_value='wss://example/ws/stream'), \
+                        patch('builtins.print'):
+                    self.assertEqual(session.start(), 'wss://example/ws/stream')
+                self.assertEqual([call.args[0] for call in spawn.call_args_list], ['server', 'tunnel'])
+                environment = spawn.call_args_list[0].args[2]
+                self.assertEqual((environment['BRIDGE_INITIAL_WIDTH'], environment['BRIDGE_INITIAL_HEIGHT']),
+                                 ('1024', '768'))
+                self.assertEqual(spawn.call_args_list[1].args[1],
+                                 [session.cloudflared, 'tunnel', '--protocol', protocol,
+                                  '--url', 'http://127.0.0.1:8000'])
+
     def test_launcher_does_not_publish_a_pytorch_fallback_when_tensorrt_is_requested(self):
         session = colab_launcher.BridgeSession(root=self.root, tensorrt=True)
         session.processes['server'] = SimpleNamespace(poll=lambda: None)
