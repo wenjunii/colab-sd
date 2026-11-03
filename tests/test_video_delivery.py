@@ -55,6 +55,26 @@ class VideoCompressionChecks(unittest.TestCase):
 
 
 class DeliveryProtocolChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_optional_display_metrics_do_not_strand_frame_credit(self):
+        ws = FakeWebSocket()
+        with patch.multiple(server, pipeline_ready=True, current_mode='txt2img'), \
+                patch.object(server, 'process_frame', return_value=(b'jpeg', 1, 2)), \
+                patch.object(server, 'get_gpu_telemetry', return_value=('--', '--')):
+            task = asyncio.create_task(server.websocket_stream_endpoint(ws))
+            try:
+                await until(lambda: ws.text)
+                await ws.incoming.put({'text': '{"type":"client_options","frame_ack":true,"frame_window":1}'})
+                await until(lambda: ws.binary)
+                await asyncio.sleep(.12)
+                count = len(ws.binary)
+                await ws.incoming.put({'text': json.dumps({'type': 'frame_ack', 'frame_id': ws.binary[-1][0],
+                                                          'display_ms': 10**100, 'client_frame_ms': float('nan')})})
+                await until(lambda: len(ws.binary) > count)
+                self.assertFalse(any(item.get('type') == 'error' for item in ws.text))
+            finally:
+                await ws.close()
+                await asyncio.wait_for(task, 2)
+
     async def test_quality_switches_and_display_acknowledgements_do_not_reload_models(self):
         ws = FakeWebSocket()
         with patch.multiple(server, pipeline_ready=True, current_mode='img2img', enable_tensorrt=True,

@@ -872,13 +872,13 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         if isinstance(frame_id, int) and not isinstance(frame_id, bool):
                             sent = outstanding_frames.pop(frame_id, None)
                             if sent is not None:
+                                frame_credit.set()
                                 latest_stats['delivery_ms'] = round((time.perf_counter() - sent) * 1000, 1)
                                 for name in ('display_ms', 'client_frame_ms'):
                                     value = data.get(name)
                                     if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                                            and np.isfinite(value) and 0 <= value <= 60000):
+                                            and 0 <= value <= 60000 and np.isfinite(value)):
                                         latest_stats[name] = round(value, 1)
-                                frame_credit.set()
                     elif data.get("type") == "control" or any(
                         key in data for key in ("prompt", "prompt_a", "mode", "seed", "strength", "blend")
                     ):
