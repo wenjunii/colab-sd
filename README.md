@@ -157,7 +157,15 @@ For internet access without router port forwarding, start a TLS tunnel instead:
 py -3.11 workstation.py start --transport cloudflare
 ```
 
-Workstation tunnels retain Cloudflare's `auto` default. Add `--tunnel-protocol http2` to compare the alternative when delivery delay is high, or select `quic` explicitly. This option applies only to Cloudflare connections. See [Cloudflare's protocol options](https://developers.cloudflare.com/tunnel/configuration/): Auto normally uses QUIC and can fall back to HTTP/2.
+Workstation Cloudflare mode defaults to **HTTP/2**, matching the Colab launcher setting. Use `--tunnel-protocol auto` or `--tunnel-protocol quic` to compare alternatives on your route. The selected protocol is printed at startup. This option applies only to Cloudflare connections; direct LAN/VPN mode remains the workstation default and does not start a tunnel. See [Cloudflare's protocol options](https://developers.cloudflare.com/tunnel/configuration/) for the available transports.
+
+For full-resolution TensorRT generation over the workstation tunnel:
+
+```powershell
+py -3.11 workstation.py start --transport cloudflare --tensorrt --resolution 1024x768
+```
+
+In TouchDesigner, select **RTX Workstation**, paste the printed URL and pairing token, then start with **Video Quality = Fast** and **Video Buffer = 3**. Both deployment modes use the same server compression, bounded frame acknowledgements, independent ping probe, and validated TensorRT archive cache. Generation stays at 1024 × 768. The approximately 8 FPS result below was measured on the Colab A100 connection; workstation FPS and delivery delay depend on its GPU and network and have not been established by that comparison.
 
 On Linux, replace `py -3.11` with `python3.11`. The launcher finds `cloudflared` on PATH or downloads the official Windows/Linux executable, binds the server to loopback by default, and prints a temporary `wss://...trycloudflare.com/ws/stream` URL plus the access token. [Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) are intended for testing/development; LAN/VPN or a managed tunnel is preferable for a permanent installation.
 

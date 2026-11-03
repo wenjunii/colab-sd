@@ -174,8 +174,8 @@ def main(argv=None):
     launch = commands.add_parser('start', help='Run generation with LAN/VPN or Cloudflare transport')
     launch.add_argument('--runtime', type=Path, default=DEFAULT_RUNTIME)
     launch.add_argument('--transport', choices=('lan', 'cloudflare'), default='lan')
-    launch.add_argument('--tunnel-protocol', choices=TUNNEL_PROTOCOLS, default='auto',
-                        help='Cloudflare transport; compare http2 if auto/QUIC has high delivery delay')
+    launch.add_argument('--tunnel-protocol', choices=TUNNEL_PROTOCOLS, default='http2',
+                        help='Cloudflare transport (default: http2, matching Colab); compare auto/quic for your route')
     launch.add_argument('--bind', help='Listening address (default: all interfaces for LAN, loopback for Cloudflare)')
     launch.add_argument('--port', type=int, default=8000)
     launch.add_argument('--advertise-host', help='Workstation LAN/VPN IP or DNS name shown in the client URL')
