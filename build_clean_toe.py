@@ -118,21 +118,24 @@ frame_started = 0.0
 
 def onConnect(dat):
     global last_fps_time, fps_frame_count, last_error
-    last_error = None
-    last_fps_time = time.perf_counter()
-    fps_frame_count = 0
-    p_status = getattr(parent().par, 'Status', None)
-    if p_status is not None:
-        p_status.val = 'Connected (Waiting for server)'
-    parent().store('can_send', True)
+    # Native WebSocket DATs can deliver welcome before invoking onConnect.
+    # Preserve that handshake, including frame credits already queued for ACK.
+    if not parent().fetch('handshake_complete', False):
+        last_error = None
+        last_fps_time = time.perf_counter()
+        fps_frame_count = 0
+        p_status = getattr(parent().par, 'Status', None)
+        if p_status is not None:
+            p_status.val = 'Connected (Waiting for server)'
+        parent().store('can_send', True)
+        parent().store('server_ready', False)
+        parent().store('handshake_complete', False)
+        parent().store('frame_ack_supported', False)
+        parent().store('pending_frame_acks', [])
+        parent().store('last_send_time', 0.0)
+        parent().store('last_ping_time', 0.0)
     parent().store('connected', True)
-    parent().store('server_ready', False)
-    parent().store('handshake_complete', False)
-    parent().store('frame_ack_supported', False)
-    parent().store('pending_frame_acks', [])
     parent().store('last_frame_receive', time.perf_counter())
-    parent().store('last_send_time', 0.0)
-    parent().store('last_ping_time', 0.0)
     print('[StreamDiffusion] WebSocket connected to server.')
 
 def onDisconnect(dat):
@@ -143,6 +146,9 @@ def onDisconnect(dat):
     parent().store('resolution_locked', False)
     parent().store('server_ready', False)
     parent().store('handshake_complete', False)
+    parent().store('frame_ack_supported', False)
+    parent().store('pending_frame_acks', [])
+    parent().store('display_pending', False)
     probe = op('latency_ws')
     if probe:
         probe.par.active = False
@@ -177,6 +183,12 @@ def onDisconnect(dat):
     global current_frame_id, frame_chunks
     current_frame_id = -1
     frame_chunks.clear()
+
+def onReceivePing(dat, contents):
+    dat.sendPong(contents)
+
+def onReceivePong(dat, contents):
+    return
 
 def onReceiveText(dat, rowIndex, message):
     global last_error
@@ -240,6 +252,7 @@ def onReceiveText(dat, rowIndex, message):
                 p_eng.val = data['engine']
 
         if msg_type == 'welcome':
+            parent().store('connected', True)
             parent().store('handshake_complete', True)
             parent().store('frame_ack_supported', bool(data.get('frame_ack', False)))
             parent().store('resolution_locked', bool(data.get('resolution_locked', False)))
@@ -443,13 +456,22 @@ LATENCY_CODE = '''import json
 import time
 
 def onConnect(dat):
-    parent().store('probe_ready', False)
-    parent().store('probe_waiting', False)
+    # probe_ready may also arrive before this callback in the native DAT.
+    if not parent().fetch('probe_ready', False):
+        parent().store('probe_waiting', False)
     parent().store('probe_sent_at', 0.0)
 
 def onDisconnect(dat):
     parent().store('probe_ready', False)
+    parent().store('probe_waiting', False)
+    parent().store('probe_sent_at', 0.0)
     parent().par.Ping = '-- ms'
+
+def onReceivePing(dat, contents):
+    dat.sendPong(contents)
+
+def onReceivePong(dat, contents):
+    return
 
 def onReceiveText(dat, rowIndex, message):
     try:
@@ -611,6 +633,9 @@ def onFrameStart(frame):
         p_fps = getattr(parent().par, 'Fps', None)
         if p_fps is not None:
             p_fps.val = '0.0 FPS'
+        p_status = getattr(parent().par, 'Status', None)
+        if p_status is not None and parent().fetch('server_ready', False):
+            p_status.val = 'Connected (Waiting for video)'
     if (ws and ws.par.active.eval() and parent().fetch('handshake_complete', False)
             and now - parent().fetch('last_ping_time', 0.0) >= 2.0):
         parent().store('last_ping_time', now)
@@ -723,10 +748,19 @@ def server_port():
     except ValueError:
         return 443
 
-def probe_url():
+def server_address(probe=False):
     parsed = urlsplit(str(parent().par.Serverurl.eval()).strip())
-    path = parsed.path.rsplit('/ws/stream', 1)[0] + '/ws/ping'
-    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ''))
+    host = parsed.hostname or ''
+    if not host:
+        return ''
+    if ':' in host:
+        host = '[' + host + ']'
+    path = parsed.path.rsplit('/ws/stream', 1)[0] + '/ws/ping' if probe else parsed.path
+    # The native DAT requires the port only in its separate Port parameter.
+    return urlunsplit((parsed.scheme, host, path, parsed.query, ''))
+
+def probe_url():
+    return server_address(probe=True)
 
 def onValueChange(par, prev):
     try:
@@ -1035,7 +1069,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'in_audio.n').write_text(IN_AUDIO_N, encoding='utf-8', newline='\n')
     (component / 'in_audio.parm').write_text(IN_AUDIO_PARM, encoding='utf-8', newline='\n')
     (component / 'websocket1.parm').write_text(
-        '?\nactive 17 on parent().par.Connect\nnetaddress 17 "" parent().par.Serverurl\n'
+        '?\nactive 17 on parent().par.Connect\nnetaddress 17 "" op("parexec_controls").module.server_address()\n'
         'port 17 443 op("parexec_controls").module.server_port()\n'
         'callbacks 0 websocket1_callbacks\nclamp 0 on\nmaxlines 0 2\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
     (component / 'latency_ws.n').write_text(
