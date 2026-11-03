@@ -3,5 +3,7 @@ active 0 off
 netaddress 17 "" op("parexec_controls").module.probe_url()
 port 17 443 op("parexec_controls").module.server_port()
 callbacks 0 latency_callbacks
+clamp 0 on
+maxlines 0 2
 language 0 text
 ?

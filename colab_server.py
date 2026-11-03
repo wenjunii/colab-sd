@@ -65,7 +65,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
 from tensorrt_backend import compile_unet as compile_tensorrt_unet
 from bridge_protocol import (OUTPUT_RESOLUTIONS, PROTOCOL_VERSION, OUTPUT_CHUNK_BYTES,
-                             MAX_INPUT_FRAME_BYTES, FrameAssembler, resolution, validate_controls)
+                             MAX_INPUT_FRAME_BYTES, VIDEO_QUALITY_LIMITS, FrameAssembler,
+                             resolution, validate_controls, video_byte_budget)
 
 # Disable autograd globally for fast inference
 torch.set_grad_enabled(False)
@@ -117,6 +118,7 @@ telemetry_cache = (0.0, "--", "--")
 active_client = None
 pipeline_revision = 0
 last_pipeline_error = None
+jpeg_quality_hints = {}
 
 # Engine acceleration state
 enable_tensorrt = os.environ.get("ENABLE_TENSORRT", "0") in ("1", "true", "True") or "--tensorrt" in sys.argv
@@ -287,7 +289,7 @@ def run_model_inference(input_image=None, mode=None):
         return None
 
 
-def process_frame(mode, frame_bytes=None):
+def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
     """Decode, infer, and encode on the worker; return complete frame timings."""
     started = time.perf_counter()
     input_image = None
@@ -312,7 +314,8 @@ def process_frame(mode, frame_bytes=None):
         out_bgr = cv2.cvtColor((np.clip(arr, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
     else:
         out_bgr = np.asarray(output)
-    jpg_bytes = compress_frame(out_bgr)
+    jpg_bytes = compress_frame(out_bgr, max_bytes=max_frame_bytes,
+                               allow_oversize=max_frame_bytes is not None)
     return jpg_bytes, inf_ms, (time.perf_counter() - started) * 1000
 
 
@@ -382,7 +385,7 @@ def _apply_validated_controls(data, width, height, resizing):
         data.get("blend"), data.get("neg_prompt"),
     )
 
-def compress_frame(arr_bgr, max_bytes=None):
+def compress_frame(arr_bgr, max_bytes=None, allow_oversize=False):
     """
     Bound payload size without silently changing the selected output resolution.
     """
@@ -391,10 +394,34 @@ def compress_frame(arr_bgr, max_bytes=None):
         # 48KB default for <=512px frames. TLS packets are still only 2KB each.
         height, width = arr_bgr.shape[:2]
         max_bytes = max(48000, round(48000 * width * height / (512 * 512)))
-    for q in (60, 50, 40, 30, 20, 10, 5, 1):
-        ret, buf = cv2.imencode('.jpg', arr_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+    qualities = (60, 50, 40, 30, 20, 10, 5, 1)
+    key = (*arr_bgr.shape[:2], max_bytes)
+    hint, count = jpeg_quality_hints.pop(key, (0, 0))
+    # Start near the previous successful quality instead of encoding a large
+    # image up to eight times on every frame. Periodically probe one step up.
+    start = max(0, hint - 1) if count % 30 == 0 else hint
+    smallest = None
+    for index in range(start, len(qualities)):
+        ret, buf = cv2.imencode('.jpg', arr_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), qualities[index],
+                                               int(cv2.IMWRITE_JPEG_OPTIMIZE), 1])
+        if ret and (smallest is None or len(buf) < len(smallest)):
+            smallest = buf
         if ret and len(buf) <= max_bytes:
+            if len(jpeg_quality_hints) >= 32:
+                del jpeg_quality_hints[next(iter(jpeg_quality_hints))]
+            next_hint = max(0, index - 1) if len(buf) < max_bytes / 2 else index
+            jpeg_quality_hints[key] = (next_hint, count + 1)
             return buf.tobytes()
+    # Some full-resolution noise/pattern images exceed a small target even at
+    # minimum quality. Keep streaming their pixels within the protocol limit.
+    if allow_oversize and smallest is not None and len(smallest) <= 255 * OUTPUT_CHUNK_BYTES:
+        if len(jpeg_quality_hints) >= 32:
+            del jpeg_quality_hints[next(iter(jpeg_quality_hints))]
+        jpeg_quality_hints[key] = (len(qualities) - 1, count + 1)
+        if count % 30 == 0:
+            logger.warning('JPEG at minimum quality exceeds the %d-byte target (%d bytes); '
+                           'preserving full output resolution', max_bytes, len(smallest))
+        return smallest.tobytes()
     raise ValueError("Could not encode an output JPEG within the frame byte budget")
 
 
@@ -636,7 +663,8 @@ async def websocket_stream_endpoint(websocket: WebSocket):
     frame_credit = asyncio.Event()
     frame_credit.set()
     ack_enabled, frame_window = False, 3
-    outstanding_frames = set()
+    video_quality = 'balanced'
+    outstanding_frames = {}
     stop_event = asyncio.Event()
     frame_available = asyncio.Event()
     control_available = asyncio.Event()
@@ -651,9 +679,11 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps(data))
 
     async def wait_for_frame_credit():
+        started = time.perf_counter()
         while ack_enabled and len(outstanding_frames) >= frame_window:
             frame_credit.clear()
             await frame_credit.wait()
+        return (time.perf_counter() - started) * 1000
 
     async def send_chunked_frame(jpg_bytes):
         nonlocal frame_counter
@@ -662,18 +692,21 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         if not 1 <= total_chunks <= 255:
             raise ValueError("Output frame exceeds the binary protocol chunk limit")
         async with frame_lock:
-            await wait_for_frame_credit()
+            credit_ms = await wait_for_frame_credit()
             frame_counter = (frame_counter + 1) % 256
+            started = time.perf_counter()
             if ack_enabled:
-                outstanding_frames.add(frame_counter)
+                outstanding_frames[frame_counter] = started
             for chunk_idx in range(total_chunks):
                 chunk = jpg_bytes[chunk_idx * chunk_size:(chunk_idx + 1) * chunk_size]
                 async with send_lock:
                     await websocket.send_bytes(bytes([frame_counter, chunk_idx, total_chunks]) + chunk)
                 if chunk_idx % 4 == 3:
                     await asyncio.sleep(0)
+            return (time.perf_counter() - started) * 1000, credit_ms
 
     async def telemetry_loop():
+        next_log = time.perf_counter() + 10
         while not stop_event.is_set():
             await asyncio.sleep(1.0)
             vram, temp = await loop.run_in_executor(None, get_gpu_telemetry)
@@ -683,6 +716,14 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     "vram": vram, "temp": temp, **latest_stats,
                     'ready': pipeline_ready, 'inflight_frames': len(outstanding_frames),
                 })
+                if time.perf_counter() >= next_log:
+                    logger.info('delivery: %s, %s bytes/frame, send=%sms, display ACK RTT=%sms, '
+                                'buffer wait=%sms, client cook=%sms, window=%d, inflight=%d',
+                                video_quality, latest_stats.get('frame_bytes', '--'),
+                                latest_stats.get('send_ms', '--'), latest_stats.get('delivery_ms', '--'),
+                                latest_stats.get('credit_wait_ms', '--'), latest_stats.get('display_ms', '--'),
+                                frame_window, len(outstanding_frames))
+                    next_log = time.perf_counter() + 10
 
     async def control_loop():
         nonlocal pending_control, pending_frame
@@ -738,7 +779,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 
                 if not pipeline_ready or current_mode != mode:
                     continue
-                await wait_for_frame_credit()
+                credit_ms = await wait_for_frame_credit()
                 if not pipeline_ready or current_mode != mode:
                     continue
                 if mode == 'img2img' and pending_frame is not None:
@@ -746,14 +787,18 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     frame_available.clear()
                 started = time.perf_counter()
                 revision = pipeline_revision
-                result = await loop.run_in_executor(model_executor, process_frame, mode, frame_bytes)
+                frame_quality = video_quality
+                budget = video_byte_budget(output_width, output_height, frame_quality)
+                result = await loop.run_in_executor(model_executor, process_frame, mode, frame_bytes, budget)
                 # Discard a completed frame if its mode was switched during inference.
                 if result is not None and current_mode == mode and revision == pipeline_revision:
                     jpg_bytes, inf_ms, process_ms = result
-                    await send_chunked_frame(jpg_bytes)
+                    send_ms, extra_credit_ms = await send_chunked_frame(jpg_bytes)
                     frame_count += 1
                     latest_stats.update(inf_ms=round(inf_ms, 1), process_ms=round(process_ms, 1),
-                                        mode=mode, strength=current_strength)
+                                        mode=mode, strength=current_strength, frame_bytes=len(jpg_bytes),
+                                        video_quality=frame_quality, send_ms=round(send_ms, 1),
+                                        credit_wait_ms=round(credit_ms + extra_credit_ms, 1))
                     if frame_count % 100 == 1:
                         logger.info("%s: frame #%d (inference %.1fms, processing %.1fms, %d bytes)",
                                     mode, frame_count, inf_ms, process_ms, len(jpg_bytes))
@@ -794,6 +839,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             "protocol": PROTOCOL_VERSION, "ready": pipeline_ready,
             "vram": vram, "temp": temp,
             'resolution_locked': resolution_locked(), 'latency_probe': True, 'frame_ack': True,
+            'video_quality_profiles': list(VIDEO_QUALITY_LIMITS),
         })
         tasks = [asyncio.create_task(supervise(generation_loop(mode))) for mode in ("txt2img", "img2img")]
         tasks.append(asyncio.create_task(supervise(telemetry_loop())))
@@ -809,16 +855,30 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         continue
                     if data.get("type") == "ping":
                         await send_json({"type": "pong", "sent_at": data.get("sent_at")})
-                    elif data.get('type') == 'client_options' and data.get('frame_ack') is True:
+                    elif data.get('type') == 'client_options':
+                        quality = data.get('video_quality', video_quality)
+                        if quality not in VIDEO_QUALITY_LIMITS:
+                            raise ValueError('Invalid video quality')
                         value = data.get('frame_window', 3)
-                        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 6:
+                        if data.get('frame_ack') is True and (not isinstance(value, int)
+                                or isinstance(value, bool) or not 1 <= value <= 6):
+                            raise ValueError('Invalid frame window')
+                        video_quality = quality
+                        if data.get('frame_ack') is True:
                             ack_enabled, frame_window = True, value
                             frame_credit.set()
                     elif data.get('type') == 'frame_ack':
                         frame_id = data.get('frame_id')
                         if isinstance(frame_id, int) and not isinstance(frame_id, bool):
-                            outstanding_frames.discard(frame_id)
-                            frame_credit.set()
+                            sent = outstanding_frames.pop(frame_id, None)
+                            if sent is not None:
+                                frame_credit.set()
+                                latest_stats['delivery_ms'] = round((time.perf_counter() - sent) * 1000, 1)
+                                for name in ('display_ms', 'client_frame_ms'):
+                                    value = data.get(name)
+                                    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                                            and 0 <= value <= 60000 and np.isfinite(value)):
+                                        latest_stats[name] = round(value, 1)
                     elif data.get("type") == "control" or any(
                         key in data for key in ("prompt", "prompt_a", "mode", "seed", "strength", "blend")
                     ):
