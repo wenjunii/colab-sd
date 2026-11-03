@@ -165,10 +165,13 @@ def onDisconnect(dat):
     p_temp = getattr(parent().par, 'Gputemp', None)
     if p_temp is not None:
         p_temp.val = '--'
-    for name in ['Frametime', 'Servertime']:
+    for name in ['Frametime', 'Servertime', 'Deliverytime', 'Cooktime', 'Streamwait']:
         par = getattr(parent().par, name, None)
         if par is not None:
             par.val = '-- ms'
+    p_size = getattr(parent().par, 'Framesize', None)
+    if p_size is not None:
+        p_size.val = '-- KB'
     parent().store('can_send', True)
     print('[StreamDiffusion] WebSocket Disconnected.')
     global current_frame_id, frame_chunks
@@ -275,6 +278,15 @@ def onReceiveText(dat, rowIndex, message):
             p_server = getattr(parent().par, 'Servertime', None)
             if p_server is not None:
                 p_server.val = f"{data['process_ms']:.1f} ms"
+        for field, name, scale, unit in (
+                ('frame_bytes', 'Framesize', 1000.0, 'KB'),
+                ('delivery_ms', 'Deliverytime', 1.0, 'ms'),
+                ('display_ms', 'Cooktime', 1.0, 'ms'),
+                ('credit_wait_ms', 'Streamwait', 1.0, 'ms')):
+            value = data.get(field)
+            par = getattr(parent().par, name, None)
+            if par is not None and isinstance(value, (int, float)):
+                par.val = f'{value / scale:.1f} {unit}'
                 
         if 'vram' in data:
             p_vram = getattr(parent().par, 'Vram', None)
@@ -365,9 +377,12 @@ def send_client_options():
         return
     par = getattr(parent().par, 'Framewindow', None)
     window = int(par.eval()) if par is not None else 3
+    quality_par = getattr(parent().par, 'Videoquality', None)
+    quality = str(quality_par.eval()) if quality_par is not None else 'balanced'
     ws = op('websocket1')
     if ws:
-        ws.sendText(json.dumps({'type': 'client_options', 'frame_ack': True, 'frame_window': window}))
+        ws.sendText(json.dumps({'type': 'client_options', 'frame_ack': True,
+                               'frame_window': window, 'video_quality': quality}))
 
 def output_size():
     p_resolution = getattr(parent().par, 'Resolution', None)
@@ -540,20 +555,27 @@ def handle_audio_reactivity(now):
 def onFrameStart(frame):
     global frame_count, frame_id_seq
     now = time.perf_counter()
+    previous_tick = parent().fetch('display_tick', now)
+    client_frame_ms = max(0.0, (now - previous_tick) * 1000)
+    parent().store('display_tick', now)
 
     display_par = getattr(parent().par, 'Displaymode', None)
     input_preview = display_par is not None and display_par.eval() == 'input'
     if input_preview or parent().fetch('display_pending', False):
         parent().store('display_pending', False)
+        display_started = time.perf_counter()
         receiver = op('script_receiver')
         if receiver:
             receiver.cook(force=True)
+        display_ms = (time.perf_counter() - display_started) * 1000
         acknowledgements = parent().fetch('pending_frame_acks', [])
         parent().store('pending_frame_acks', [])
         stream = op('websocket1')
         if stream and stream.par.active.eval():
             for frame_id in acknowledgements:
-                stream.sendText(json.dumps({'type': 'frame_ack', 'frame_id': frame_id}))
+                stream.sendText(json.dumps({'type': 'frame_ack', 'frame_id': frame_id,
+                                           'display_ms': round(display_ms, 1),
+                                           'client_frame_ms': round(client_frame_ms, 1)}))
 
     if parent().fetch('client_options_pending', False):
         parent().store('client_options_pending', False)
@@ -736,7 +758,7 @@ def onValueChange(par, prev):
                 normalized = urlunsplit((scheme, parsed.netloc, path, parsed.query, ''))
                 if normalized != value:
                     par.val = normalized
-        elif par.name == 'Framewindow':
+        elif par.name in ('Framewindow', 'Videoquality'):
             parent().store('client_options_pending', True)
         elif par.name == 'Resolution' and parent().fetch('resolution_locked', False):
             width, height = parent().fetch('server_resolution', (512, 512))
@@ -825,6 +847,10 @@ def save_snapshot():
             'server_processing': str(getattr(p, 'Servertime', '')),
             'frame_round_trip': str(getattr(p, 'Frametime', '')),
             'network_ping': str(getattr(p, 'Ping', '')),
+            'video_quality': str(getattr(p, 'Videoquality', 'balanced')),
+            'video_frame_size': str(getattr(p, 'Framesize', '')),
+            'video_delivery_rtt': str(getattr(p, 'Deliverytime', '')),
+            'display_cook_time': str(getattr(p, 'Cooktime', '')),
             'vram': str(getattr(p, 'Vram', '')),
             'gpu_temp': str(getattr(p, 'Gputemp', ''))
         }
@@ -874,6 +900,11 @@ pages 1 StreamDiffusion
 772804868 Frametime "Frame Round Trip" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 30
 772804868 Streamrtt "Stream Control RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 31
 772804879 Framewindow "Video Buffer (frames)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 1 "1 (lowest latency)" 2 "2" 3 "3 (balanced)" 6 "6 (higher throughput)" 32
+772804879 Videoquality "Video Quality" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 fast "Fast (48 KB target)" balanced "Balanced (64 KB target)" detail "Detail (larger frames)" 33
+772804868 Framesize "Video Frame Size" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 34
+772804868 Deliverytime "Video Delivery RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 35
+772804868 Cooktime "Display Cook" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 36
+772804868 Streamwait "Video Buffer Wait" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 37
 ?
 '''
 
@@ -909,6 +940,11 @@ Servertime 67109184 "-- ms"
 Frametime 67109184 "-- ms"
 Streamrtt 67109184 "-- ms"
 Framewindow 67108928 3
+Videoquality 67108928 balanced
+Framesize 67109184 "-- KB"
+Deliverytime 67109184 "-- ms"
+Cooktime 67109184 "-- ms"
+Streamwait 67109184 "-- ms"
 ?
 '''
 
@@ -1001,17 +1037,17 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'websocket1.parm').write_text(
         '?\nactive 17 on parent().par.Connect\nnetaddress 17 "" parent().par.Serverurl\n'
         'port 17 443 op("parexec_controls").module.server_port()\n'
-        'callbacks 0 websocket1_callbacks\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
+        'callbacks 0 websocket1_callbacks\nclamp 0 on\nmaxlines 0 2\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
     (component / 'latency_ws.n').write_text(
         'DAT:websocket\ntile -350 300 130 90\nflags = parlanguage 0\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_ws.parm').write_text(
         '?\nactive 0 off\nnetaddress 17 "" op("parexec_controls").module.probe_url()\n'
         'port 17 443 op("parexec_controls").module.server_port()\n'
-        'callbacks 0 latency_callbacks\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
+        'callbacks 0 latency_callbacks\nclamp 0 on\nmaxlines 0 2\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.n').write_text(
         'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh'
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')

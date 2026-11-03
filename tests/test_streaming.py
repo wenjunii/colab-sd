@@ -248,7 +248,7 @@ class WebSocketChecks(unittest.IsolatedAsyncioTestCase):
         processed = []
         payload = b'x' * 7000
 
-        def process(mode, data):
+        def process(mode, data, max_frame_bytes=None):
             processed.append(data)
             if len(processed) == 1:
                 started.set()

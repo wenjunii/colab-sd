@@ -187,7 +187,9 @@ class ClientLatencyChecks(unittest.TestCase):
         namespace['onFrameStart'](1)
         receiver.cook.assert_called_once()
         sent = [json.loads(call.args[0]) for call in ws.sendText.call_args_list]
-        self.assertIn({'type': 'frame_ack', 'frame_id': 7}, sent)
+        ack = next(item for item in sent if item.get('type') == 'frame_ack')
+        self.assertEqual(ack['frame_id'], 7)
+        self.assertGreaterEqual(ack['display_ms'], 0)
 
     def test_slow_output_frame_keeps_assembly_state_and_ack_credit(self):
         storage = {'frame_ack_supported': True}

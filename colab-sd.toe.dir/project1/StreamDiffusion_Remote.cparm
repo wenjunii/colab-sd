@@ -33,4 +33,9 @@ pages 1 StreamDiffusion
 772804868 Frametime "Frame Round Trip" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 30
 772804868 Streamrtt "Stream Control RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 31
 772804879 Framewindow "Video Buffer (frames)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 1 "1 (lowest latency)" 2 "2" 3 "3 (balanced)" 6 "6 (higher throughput)" 32
+772804879 Videoquality "Video Quality" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 fast "Fast (48 KB target)" balanced "Balanced (64 KB target)" detail "Detail (larger frames)" 33
+772804868 Framesize "Video Frame Size" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 34
+772804868 Deliverytime "Video Delivery RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 35
+772804868 Cooktime "Display Cook" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 36
+772804868 Streamwait "Video Buffer Wait" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 37
 ?

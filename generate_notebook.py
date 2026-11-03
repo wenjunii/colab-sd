@@ -32,6 +32,9 @@ Keep the cache private; full-weight engine archives use several GB per resolutio
 
 Supports text/image generation, prompt blending, audio controls, telemetry, snapshots,
 and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 512.
+TouchDesigner's Video Quality menu controls JPEG traffic independently of generation
+size: Fast targets 48 KB/frame, Balanced 64 KB, and Detail allows larger frames.
+Balanced is the default. Delivery diagnostics are logged every ten seconds.
 Select `STARTUP_RESOLUTION` before launch. TensorRT locks that size by default;
 TouchDesigner adopts it when connecting. PyTorch supports live resolution changes.
 Each new TensorRT profile compiles once. Matching full-weight archives are loaded and

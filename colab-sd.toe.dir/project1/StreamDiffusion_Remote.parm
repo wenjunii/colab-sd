@@ -30,4 +30,9 @@ Servertime 67109184 "-- ms"
 Frametime 67109184 "-- ms"
 Streamrtt 67109184 "-- ms"
 Framewindow 67108928 3
+Videoquality 67108928 balanced
+Framesize 67109184 "-- KB"
+Deliverytime 67109184 "-- ms"
+Cooktime 67109184 "-- ms"
+Streamwait 67109184 "-- ms"
 ?
