@@ -47,7 +47,7 @@ def build_and_check(root=PROJECT_DIR):
             print('\n'.join(summary))
         run_cmd([sys.executable, str(root / 'generate_notebook.py'), '--check'], root, env=environment)
         run_cmd(['git', 'diff', '--check'], root, env=environment)
-    print('Removed this run\'s temporary build/test files.')
+    print('Permanently removed only this run\'s disposable temporary build/test files.')
 
 
 def sync(message, root=PROJECT_DIR, check_only=False, dry_run=False, merge=False, admin=False, pr_body_file=None):
