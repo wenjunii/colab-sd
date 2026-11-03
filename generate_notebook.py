@@ -18,8 +18,15 @@ def make_notebook(project_dir=PROJECT_DIR):
 Run SD-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare tunnel.
 
 1. Select a GPU runtime, then run the four code cells in order.
-2. The launcher checks actual server readiness before creating the tunnel.
-3. Paste the displayed `wss://.../ws/stream` URL into TouchDesigner and enable Connect.
+2. In Step 2, enable `USE_GOOGLE_DRIVE` to retain downloaded models between runtimes.
+3. The launcher checks actual server readiness before creating the tunnel.
+4. Paste the displayed `wss://.../ws/stream` URL into TouchDesigner and enable Connect.
+
+Drive storage is optional and asks you to authorize a mount. Models are cached in
+`MyDrive/StreamDiffusion/models` by default. The first run downloads missing weights;
+later sessions reuse them. Drive reads can make startup slower than local disk.
+Packages still install in each new VM and TensorRT engines still rebuild. Keep the
+cache folder private, and finish the first server startup before disconnecting.
 
 Supports text/image generation, prompt blending, audio controls, telemetry, snapshots,
 and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 512.
@@ -42,7 +49,14 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
             raise RuntimeError('Select Runtime > Change runtime type > GPU, then run this cell again.')
         subprocess.run(['nvidia-smi'], check=True)
     """)
-    setup = '# Step 2: Install the compatible environment\n' + (root / 'colab_setup.py').read_text(encoding='utf-8')
+    setup = dedent("""\
+        # @title Step 2: Install environment and choose model storage
+        # @markdown Enable Drive to reuse model weights in future Colab runtimes. Authorize Drive when prompted.
+        USE_GOOGLE_DRIVE = False # @param {type:"boolean"}
+        # @markdown Folder relative to MyDrive. Keep the same folder in later sessions.
+        DRIVE_MODEL_FOLDER = "StreamDiffusion/models" # @param {type:"string"}
+
+    """) + (root / 'colab_setup.py').read_text(encoding='utf-8')
     write_server = '# Step 3: Write server and standalone helpers\n'
     # Keep the first assignment as server_code for simple source verification.
     for variable, source_name, target_name in (

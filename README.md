@@ -13,6 +13,7 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 ## 🌟 Key Features
 
 * **Two Server Locations:** Choose **Google Colab** or **RTX Workstation (Windows / Linux)**. Each location remembers its own server URL. TouchDesigner uses the local GPU for its TOP network and display; the server runs diffusion.
+* **Optional Google Drive Model Cache:** Retain Colab model downloads in Drive and reuse them in later runtimes. Enable it in the notebook's setup cell.
 * **Workstation Pairing:** A dedicated Python environment, CUDA preflight, configurable listening address/port, persistent access token, and optional Cloudflare tunnel. Text/image generation, prompts, audio, resolution, snapshots, and telemetry use the same protocol for either location.
 * **Two Generation Modes:**
   * **Text-to-Image (`txt2img`):** Continuous visual stream driven by prompts, blend weights, and seeds, using a single-image SD-Turbo batch.
@@ -76,11 +77,11 @@ flowchart LR
 1. Open [Google Colab](https://colab.research.google.com/) and upload `StreamDiffusion_Colab_Server.ipynb` (or open it from Google Drive / clone this repo).
 2. Ensure GPU runtime is active:
    * **Runtime** $\rightarrow$ **Change runtime type** $\rightarrow$ **Hardware accelerator: GPU** (Select **T4**, **L4**, or **A100**).
-3. Execute cells 1 through 3.
+3. Execute cells 1 through 3. In **Step 2**, enable **`USE_GOOGLE_DRIVE`** to keep model downloads between Colab sessions, then authorize Drive access when prompted. Leave it off to use temporary runtime storage.
 4. In **Cell 4 (Launch Server)**, configure the **1-Toggle Acceleration Switch**:
    * **`ENABLE_TENSORRT = False` (Default):** PyTorch Native FP16 without engine compilation.
    * **`ENABLE_TENSORRT = True`:** Installs a Torch-TensorRT release matching the existing PyTorch build, then compiles and validates the UNet for both modes. Requires Python 3.11+ and PyTorch 2.11+. Compilation can take several minutes at startup and after an output-size change. TinyVAE stays in PyTorch. Actual FPS and latency depend on GPU, resolution, and connection.
-5. Run Cell 4. The server downloads SD-Turbo weights (~2.5GB), completes GPU warmup, and displays your live WebSocket endpoint:
+5. Run Cell 4. The server loads cached model weights (downloading any missing files), completes GPU warmup, and displays your live WebSocket endpoint:
    ```text
    StreamDiffusion is ready
    Paste this URL into TouchDesigner:
@@ -89,6 +90,23 @@ flowchart LR
 6. Re-running the launch cell stops its own earlier server and tunnel. Interrupting the cell stops both. Startup and tunnel discovery have timeouts; logs remain in `bridge_logs/server.log` and `bridge_logs/tunnel.log`. TensorRT installation logs are in `bridge_logs/tensorrt-setup.log`. An unrelated process on port 8000 is reported rather than killed. If requested TensorRT setup or compilation fails, startup stops rather than announcing a PyTorch fallback as ready. Uncheck TensorRT to explicitly use native mode.
 
 Setup checks out [StreamDiffusion revision `b623251`](https://github.com/cumulo-autumn/StreamDiffusion/commit/b623251dc055e1fd858d53509aa43e09dfc5cdc0) and installs core dependencies together using the compatibility pins in `colab_setup.py`. The notebook bundles the server, shared protocol, and launcher sources; no manual helper uploads are required.
+
+#### Keep Colab models in Google Drive
+
+In Step 2, set:
+
+```python
+USE_GOOGLE_DRIVE = True
+DRIVE_MODEL_FOLDER = "StreamDiffusion/models"
+```
+
+Models are then cached at **`/content/drive/MyDrive/StreamDiffusion/models`**. Finish the first server startup so SD-Turbo, TinyVAE, and their model configuration/tokenizer files are downloaded. In later Colab runtimes, enable the same option, authorize Drive, and keep the same folder: existing model weights load from Drive rather than downloading again. Hugging Face may still check for updated files and download anything new or missing. Enabling Drive does not copy an earlier runtime's local cache automatically, so the first Drive-backed run may download weights once more.
+
+Allow several GB of free Drive space. Loading weights from mounted Drive may be slower than runtime disk, but the loaded models still run on the Colab GPU. Python packages and source setup remain local to each new runtime; TensorRT engines still compile because engine reuse remains disabled. This option persists the model repository cache, not the Python environment or TensorRT engines.
+
+The setup prints the active cache location and checks it is writable. Drive authorization or storage failures stop setup; it does not silently substitute a temporary cache. Turning the option off on a later setup run selects the runtime's local cache without deleting Drive files. Stop a running launch cell and rerun Step 4 after changing storage; the server inherits the setup cell's cache settings in a fresh Python process.
+
+The cache settings cover both modern Hugging Face Hub and the project's legacy Diffusers/Transformers paths. They do not relocate `HF_HOME` or `HF_TOKEN_PATH`. Keep the Drive folder private and avoid editing its cache files manually. See the [Hugging Face cache environment variables](https://huggingface.co/docs/huggingface_hub/v0.25.2/package_reference/environment_variables) for details.
 
 ---
 
