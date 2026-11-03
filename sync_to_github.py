@@ -1,6 +1,7 @@
 """Build, validate, and sync without shell interpolation or unchecked failures."""
 import argparse
 import datetime
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -14,27 +15,39 @@ class SyncError(RuntimeError):
     pass
 
 
-def run_cmd(command, root=PROJECT_DIR, check=True):
+def run_cmd(command, root=PROJECT_DIR, check=True, env=None):
     result = subprocess.run(command, cwd=root, capture_output=True, text=True,
-                            encoding='utf-8', errors='replace')
+                            encoding='utf-8', errors='replace', env=env)
     if check and result.returncode:
         raise SyncError(f'{shlex.join(str(part) for part in command)} failed:\n{result.stderr.strip() or result.stdout.strip()}')
     return result
 
 
 def build_and_check(root=PROJECT_DIR):
-    for script in ('build_clean_toe.py', 'generate_notebook.py'):
-        result = run_cmd([sys.executable, str(root / script)], root)
-        if result.stdout.strip():
-            print(result.stdout.strip())
-    print('Running project tests...', flush=True)
-    tests = run_cmd([sys.executable, '-m', 'unittest', 'discover', '-s', str(root / 'tests'), '-v'], root)
-    summary = [line.strip() for line in (tests.stdout + '\n' + tests.stderr).splitlines()
-               if line.startswith('Ran ') or line.strip() == 'OK']
-    if summary:
-        print('\n'.join(summary))
-    run_cmd([sys.executable, str(root / 'generate_notebook.py'), '--check'], root)
-    run_cmd(['git', 'diff', '--check'], root)
+    # Own only this run's temporary files. Never sweep existing Temp folders,
+    # persistent test/workstation environments, or reusable model caches.
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(prefix='colab-sd-check-', dir=temporary_root) as directory:
+        scratch = Path(directory).resolve()
+        if scratch.parent != temporary_root:
+            raise SyncError('Build scratch directory resolved outside its temporary parent')
+        environment = os.environ.copy()
+        environment.update(TMP=str(scratch), TEMP=str(scratch), TMPDIR=str(scratch),
+                           PYTHONDONTWRITEBYTECODE='1')
+        for script in ('build_clean_toe.py', 'generate_notebook.py'):
+            result = run_cmd([sys.executable, str(root / script)], root, env=environment)
+            if result.stdout.strip():
+                print(result.stdout.strip())
+        print('Running project tests...', flush=True)
+        tests = run_cmd([sys.executable, '-m', 'unittest', 'discover', '-s', str(root / 'tests'), '-v'],
+                        root, env=environment)
+        summary = [line.strip() for line in (tests.stdout + '\n' + tests.stderr).splitlines()
+                   if line.startswith('Ran ') or line.strip() == 'OK']
+        if summary:
+            print('\n'.join(summary))
+        run_cmd([sys.executable, str(root / 'generate_notebook.py'), '--check'], root, env=environment)
+        run_cmd(['git', 'diff', '--check'], root, env=environment)
+    print('Removed this run\'s temporary build/test files.')
 
 
 def sync(message, root=PROJECT_DIR, check_only=False, dry_run=False, merge=False, admin=False, pr_body_file=None):
@@ -43,6 +56,7 @@ def sync(message, root=PROJECT_DIR, check_only=False, dry_run=False, merge=False
         raise SyncError('--admin requires --merge')
     if dry_run:
         print('Dry run: build both TouchDesigner archives; regenerate notebook; run tests and notebook checks.')
+        print('Use private build/test scratch and remove only that run\'s temporary files when checks finish.')
         if not check_only:
             print('Then stage changes, commit the supplied message as one argument, and push the current branch.')
             print('If main is protected, create a codex/sync-* branch and a pull request.')
