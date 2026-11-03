@@ -26,9 +26,11 @@ pages 1 StreamDiffusion
 772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
 772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
 772804868 Gputime "GPU Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
-772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
+772804868 Ping "Network Probe RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
 772804868 Vram "GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 27
 772804868 Gputemp "GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 28
 772804868 Servertime "Server Frame Processing" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 29
 772804868 Frametime "Frame Round Trip" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 30
+772804868 Streamrtt "Stream Control RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 31
+772804879 Framewindow "Video Buffer (frames)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 1 "1 (lowest latency)" 2 "2" 3 "3 (balanced)" 6 "6 (higher throughput)" 32
 ?

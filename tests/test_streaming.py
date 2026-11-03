@@ -94,7 +94,7 @@ class ServerChecks(unittest.TestCase):
                 server.apply_controls({'width': 1024, 'height': 768})
         self.assertFalse(server.pipeline_ready)
         self.assertEqual(server.health().status_code, 503)
-        self.assertEqual(json.loads(server.health().body)['last_error'], 'Configuration failed; see Colab server logs')
+        self.assertEqual(json.loads(server.health().body)['last_error'], 'Configuration failed; see server logs')
 
     def test_engine_readout_follows_the_current_mode(self):
         with patch.multiple(server, active_engine='TensorRT (UNet)', img2img_engine='PyTorch (FP16)'):
@@ -118,7 +118,7 @@ class ServerChecks(unittest.TestCase):
             self.assertFalse(server.pipeline_ready)
             status = json.loads(server.health().body)
             self.assertEqual(status['requested_engine'], 'TensorRT')
-            self.assertEqual(status['engine'], 'PyTorch (FP16)')
+            self.assertEqual(status['engine'], 'TensorRT (Preparing)')
             self.assertEqual(server.health().status_code, 503)
 
     def test_resize_and_jpeg_keep_requested_dimensions_and_color(self):
@@ -325,7 +325,7 @@ class Par:
 
 class TouchDesignerChecks(unittest.TestCase):
     def test_embedded_callbacks_compile(self):
-        for name in ('SCRIPT_RECEIVER_CODE', 'WEBSOCKET_CODE', 'EXEC_SEND_FRAME_CODE', 'PAREXEC_CODE'):
+        for name in ('SCRIPT_RECEIVER_CODE', 'WEBSOCKET_CODE', 'LATENCY_CODE', 'EXEC_SEND_FRAME_CODE', 'PAREXEC_CODE'):
             compile(getattr(builder, name), name, 'exec')
 
     def test_input_preview_works_before_receiving_any_ai_frame(self):
@@ -468,7 +468,7 @@ class TouchDesignerChecks(unittest.TestCase):
 
     def test_received_frames_defer_display_and_measure_ping_separately(self):
         storage = {'last_send_time': time.perf_counter() - 0.1}
-        pars = SimpleNamespace(Mode=Par('img2img'), Frametime=Par(''), Ping=Par(''))
+        pars = SimpleNamespace(Mode=Par('img2img'), Frametime=Par(''), Ping=Par(''), Streamrtt=Par(''))
         component = SimpleNamespace(par=pars, fetch=lambda key, default=None: storage.get(key, default),
                                     store=lambda key, value: storage.__setitem__(key, value))
         op = Mock()
@@ -482,7 +482,8 @@ class TouchDesignerChecks(unittest.TestCase):
         op.assert_not_called()
         self.assertEqual(pars.Ping.val, '')
         namespace['onReceiveText'](None, 0, json.dumps({'type': 'pong', 'sent_at': time.perf_counter() - 0.02}))
-        self.assertGreaterEqual(float(pars.Ping.val.split()[0]), 20)
+        self.assertGreaterEqual(float(pars.Streamrtt.val.split()[0]), 20)
+        self.assertEqual(pars.Ping.val, '')
 
 
 if __name__ == '__main__':

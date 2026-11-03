@@ -23,6 +23,8 @@ The bridge uses SD-Turbo and TinyVAE; it does not offer a client control for sel
 
 The remaining GPU migration must update the dependency stack together, verify model loading and non-flat image output in both generation modes, check prompt blending and denoise strength, and validate both TensorRT UNets against native outputs. Test-only dependency updates do not establish GPU compatibility. The last GPU validation and its exact software versions are recorded in the README.
 
+TensorRT deployment archives contain executable model graphs and must come from your own trusted runtime. Keep Drive/cache folders private; checksums detect accidental corruption, not a malicious replacement of both archive and manifest. The cache validates hardware/software/model metadata and numerical output before use. Stripped/refit engine caching remains disabled.
+
 ## Workstation access
 
 `workstation.py setup` creates its own environment rather than modifying system Python. It reuses the same legacy model dependency pins listed above, with a selected CUDA Torch wheel and patched Pillow/filelock/setuptools. The CPU dependency audit does not establish security of this GPU environment.

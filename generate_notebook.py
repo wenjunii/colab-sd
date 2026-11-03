@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 from textwrap import dedent
+from bridge_protocol import OUTPUT_RESOLUTIONS
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
@@ -25,13 +26,17 @@ Run SD-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare
 Drive storage is optional and asks you to authorize a mount. Models are cached in
 `MyDrive/StreamDiffusion/models` by default. The first run downloads missing weights;
 later sessions reuse them. Drive reads can make startup slower than local disk.
-Packages still install in each new VM and TensorRT engines still rebuild. Keep the
-cache folder private, and finish the first server startup before disconnecting.
+Packages still install in each new VM. In Step 4, keep `PERSIST_TENSORRT_CACHE` and
+`REUSE_TENSORRT_ENGINES` enabled to save matching engines alongside the models on Drive.
+Keep the cache private; full-weight engine archives use several GB per resolution.
 
 Supports text/image generation, prompt blending, audio controls, telemetry, snapshots,
 and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 512.
-Resolution changes reload model buffers and rebuild TensorRT engines. Builder timings
-are cached per profile; engine reuse is disabled because SDK refit produced invalid output.
+Select `STARTUP_RESOLUTION` before launch. TensorRT locks that size by default;
+TouchDesigner adopts it when connecting. PyTorch supports live resolution changes.
+Each new TensorRT profile compiles once. Matching full-weight archives are loaded and
+numerically validated on later launches. A different GPU/software/model needs a new
+build. Unsafe stripped/refit engine caching remains disabled.
 TensorRT uses matching Torch-TensorRT wheels on Python 3.11+ / PyTorch 2.11+.
 Both modes compile and validate their UNets; TinyVAE stays in PyTorch. Requested
 acceleration never silently falls back to a successful native startup.
@@ -73,13 +78,29 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         # @markdown TensorRT may take several minutes to compile engines for a new output size.
         ENABLE_TENSORRT = False # @param {type:"boolean"}
         MAX_FPS = 60 # @param {type:"integer"}
+        STARTUP_RESOLUTION = "512x512" # @param RESOLUTION_OPTIONS
+        # @markdown Keep the size locked to avoid an accidental live engine build.
+        LOCK_TENSORRT_RESOLUTION = True # @param {type:"boolean"}
+        REUSE_TENSORRT_ENGINES = True # @param {type:"boolean"}
+        # @markdown With Step 2 Drive enabled, save full engines there (several GB per resolution).
+        PERSIST_TENSORRT_CACHE = True # @param {type:"boolean"}
 
         if 'bridge_session' in globals():
             bridge_session.stop()
         import importlib
+        import os
+        from pathlib import Path
         import colab_launcher
         importlib.reload(colab_launcher)
-        bridge_session = colab_launcher.BridgeSession(tensorrt=ENABLE_TENSORRT, max_fps=MAX_FPS)
+        width, height = map(int, STARTUP_RESOLUTION.split('x'))
+        engine_cache = None
+        if PERSIST_TENSORRT_CACHE and globals().get('USE_GOOGLE_DRIVE', False):
+            engine_cache = Path(os.environ['HF_HUB_CACHE']).parent / 'tensorrt'
+        bridge_session = colab_launcher.BridgeSession(
+            tensorrt=ENABLE_TENSORRT, max_fps=MAX_FPS, output_size=(width, height),
+            allow_tensorrt_resize=not LOCK_TENSORRT_RESOLUTION,
+            engine_cache=engine_cache, reuse_engines=REUSE_TENSORRT_ENGINES)
+        print('TensorRT profile cache:', bridge_session.engine_cache)
         try:
             ws_url = bridge_session.start()
             print('StreamDiffusion is ready. Paste this URL into TouchDesigner:')
@@ -89,7 +110,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
             print('Stopping this bridge session...')
         finally:
             bridge_session.stop()
-    """)
+    """).replace('RESOLUTION_OPTIONS', json.dumps([f'{w}x{h}' for w, h in OUTPUT_RESOLUTIONS]))
     cells = [{"cell_type": "markdown", "metadata": {}, "source": intro.splitlines(keepends=True)}]
     cells.extend(code_cell(source) for source in (gpu_check, setup, write_server, launch))
     return {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"gpuType": "T4", "provenance": []},

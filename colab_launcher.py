@@ -10,12 +10,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from bridge_protocol import resolution
 
 
 class BridgeSession:
     def __init__(self, tensorrt=False, max_fps=60, root=None, startup_timeout=None, tunnel_timeout=90,
                  host='0.0.0.0', port=8000, tunnel=True, advertise_host=None,
-                 server_script='server.py', python_executable=None, cloudflared=None, access_token=None):
+                 server_script='server.py', python_executable=None, cloudflared=None, access_token=None,
+                 output_size=(512, 512), allow_tensorrt_resize=False, engine_cache=None, reuse_engines=True):
         if not math.isfinite(float(max_fps)) or not 1 <= float(max_fps) <= 120:
             raise ValueError('Maximum FPS must be between 1 and 120')
         self.root = Path(root or Path.cwd()).resolve()
@@ -30,6 +32,10 @@ class BridgeSession:
         self.cloudflared = str(cloudflared or self.root / ('cloudflared.exe' if os.name == 'nt' else 'cloudflared'))
         self.access_token = access_token
         self.session_id = os.urandom(16).hex()
+        self.output_size = resolution({'width': output_size[0], 'height': output_size[1]})
+        self.allow_tensorrt_resize = bool(allow_tensorrt_resize)
+        self.engine_cache = Path(engine_cache or self.root / 'engines/torch-tensorrt').resolve()
+        self.reuse_engines = bool(reuse_engines)
         self.tensorrt = bool(tensorrt)
         self.max_fps = float(max_fps)
         self.startup_timeout = startup_timeout or (1800 if tensorrt else 600)
@@ -123,6 +129,10 @@ class BridgeSession:
             environment['BRIDGE_HOST'] = self.host
             environment['BRIDGE_PORT'] = str(self.port)
             environment['BRIDGE_SESSION_ID'] = self.session_id
+            environment['BRIDGE_INITIAL_WIDTH'], environment['BRIDGE_INITIAL_HEIGHT'] = map(str, self.output_size)
+            environment['BRIDGE_TRT_ALLOW_RESIZE'] = '1' if self.allow_tensorrt_resize else '0'
+            environment['BRIDGE_TRT_CACHE_DIR'] = str(self.engine_cache)
+            environment['BRIDGE_TRT_ENGINE_REUSE'] = '1' if self.reuse_engines else '0'
             if self.access_token is not None:
                 environment['BRIDGE_ACCESS_TOKEN'] = self.access_token
             if self.tensorrt:

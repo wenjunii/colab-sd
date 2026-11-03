@@ -125,6 +125,8 @@ img2img_engine = "PyTorch (FP16)"
 
 
 def engine_for_mode(mode=None):
+    if enable_tensorrt and not pipeline_ready:
+        return 'TensorRT (Unavailable)' if last_pipeline_error else 'TensorRT (Preparing)'
     return img2img_engine if (mode or current_mode) == "img2img" else active_engine
 
 # Prompt state
@@ -136,9 +138,14 @@ current_neg_prompt = "blurry, low quality, distorted, watermark"
 current_mode = "txt2img"
 current_seed = 42
 current_strength = 0.6
-output_width = 512
-output_height = 512
+output_width, output_height = resolution({'width': int(os.environ.get('BRIDGE_INITIAL_WIDTH', '512')),
+                                         'height': int(os.environ.get('BRIDGE_INITIAL_HEIGHT', '512'))})
 output_resolutions = OUTPUT_RESOLUTIONS
+allow_tensorrt_resize = os.environ.get('BRIDGE_TRT_ALLOW_RESIZE', '0') == '1'
+
+
+def resolution_locked():
+    return enable_tensorrt and not allow_tensorrt_resize
 
 
 def requested_resolution(data):
@@ -314,6 +321,8 @@ def apply_controls(data):
     global current_mode, current_seed, output_width, output_height, last_pipeline_error, pipeline_ready
     data = validate_controls(data, (output_width, output_height))
     width, height = requested_resolution(data)
+    if resolution_locked() and (width, height) != (output_width, output_height):
+        raise ValueError('TensorRT resolution is locked; select the startup resolution and restart the server')
     state_fields = ('current_mode', 'current_seed', 'current_strength', 'current_prompt_a',
                     'current_prompt_b', 'current_prompt_blend', 'current_neg_prompt',
                     'output_width', 'output_height')
@@ -324,7 +333,7 @@ def apply_controls(data):
         last_pipeline_error = None
     except Exception as exc:
         globals().update(previous)
-        last_pipeline_error = "Configuration failed; see Colab server logs"
+        last_pipeline_error = "Configuration failed; see server logs"
         # A failed constructor can retain tensors in its traceback. Release
         # those frames before attempting to allocate the old model buffers.
         exc.__traceback__ = None
@@ -543,12 +552,15 @@ def health():
         "requested_engine": "TensorRT" if enable_tensorrt else "PyTorch (FP16)",
         "session_id": os.environ.get('BRIDGE_SESSION_ID'),
         "authentication_required": bool(access_token),
+        "resolution_locked": resolution_locked(),
     }, status_code=200 if pipeline_ready else 503)
 
 
 def configuration_error(code):
     """Public status contains no internal exception text or stack information."""
-    if code == "invalid_control":
+    if code == 'resolution_locked':
+        status = f'TensorRT is fixed at {output_width} x {output_height}; change startup resolution and restart'
+    elif code == "invalid_control":
         status = "Invalid controls: check output preset, mode, seed, strength, and blend values"
     elif pipeline_ready:
         status = "Configuration failed; previous settings restored. See server logs for details"
@@ -556,11 +568,10 @@ def configuration_error(code):
         status = "Configuration failed; see server logs, then retry or restart the server"
     return {"type": "error", "code": code, "status": status,
             "ready": pipeline_ready, "mode": current_mode,
-            "width": output_width, "height": output_height}
+            "width": output_width, "height": output_height, 'engine': engine_for_mode(),
+            'resolution_locked': resolution_locked()}
 
-@app.websocket("/ws/stream")
-async def websocket_stream_endpoint(websocket: WebSocket):
-    global active_client
+async def authorize_websocket(websocket):
     # Authenticate before reserving the single controller or exposing frames.
     # Tokens travel in a message, never a URL or a request log.
     await websocket.accept()
@@ -569,7 +580,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         try:
             message = await asyncio.wait_for(websocket.receive(), timeout=10)
             if message.get('type') == 'websocket.disconnect':
-                return
+                return False
             data = json.loads(message.get('text', ''))
             authenticated = (isinstance(data, dict) and data.get('type') == 'auth'
                              and isinstance(data.get('token'), str)
@@ -580,7 +591,36 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps({'type': 'error', 'code': 'unauthorized',
                                                  'status': 'Access token missing or incorrect'}))
             await websocket.close(code=1008)
-            return
+            return False
+    return True
+
+
+@app.websocket('/ws/ping')
+async def websocket_ping_endpoint(websocket: WebSocket):
+    if not await authorize_websocket(websocket):
+        return
+    try:
+        await websocket.send_text(json.dumps({'type': 'probe_ready'}))
+        while True:
+            message = await websocket.receive()
+            if message.get('type') == 'websocket.disconnect':
+                break
+            if message.get('text') and len(message['text']) <= 1024:
+                try:
+                    data = json.loads(message['text'])
+                    if isinstance(data, dict) and data.get('type') == 'ping':
+                        await websocket.send_text(json.dumps({'type': 'pong', 'sent_at': data.get('sent_at')}))
+                except (TypeError, ValueError):
+                    pass
+    except WebSocketDisconnect:
+        pass
+
+
+@app.websocket("/ws/stream")
+async def websocket_stream_endpoint(websocket: WebSocket):
+    global active_client
+    if not await authorize_websocket(websocket):
+        return
     # Both modes share one mutable model; an additional controller must not
     # silently overwrite the active performer's prompts and resolution.
     if active_client is not None:
@@ -592,6 +632,11 @@ async def websocket_stream_endpoint(websocket: WebSocket):
     logger.info("TouchDesigner client connected to WebSocket.")
     loop = asyncio.get_running_loop()
     send_lock = asyncio.Lock()
+    frame_lock = asyncio.Lock()
+    frame_credit = asyncio.Event()
+    frame_credit.set()
+    ack_enabled, frame_window = False, 3
+    outstanding_frames = set()
     stop_event = asyncio.Event()
     frame_available = asyncio.Event()
     control_available = asyncio.Event()
@@ -605,17 +650,28 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         async with send_lock:
             await websocket.send_text(json.dumps(data))
 
+    async def wait_for_frame_credit():
+        while ack_enabled and len(outstanding_frames) >= frame_window:
+            frame_credit.clear()
+            await frame_credit.wait()
+
     async def send_chunked_frame(jpg_bytes):
         nonlocal frame_counter
-        frame_counter = (frame_counter + 1) % 256
         chunk_size = OUTPUT_CHUNK_BYTES
         total_chunks = (len(jpg_bytes) + chunk_size - 1) // chunk_size
         if not 1 <= total_chunks <= 255:
             raise ValueError("Output frame exceeds the binary protocol chunk limit")
-        async with send_lock:
+        async with frame_lock:
+            await wait_for_frame_credit()
+            frame_counter = (frame_counter + 1) % 256
+            if ack_enabled:
+                outstanding_frames.add(frame_counter)
             for chunk_idx in range(total_chunks):
                 chunk = jpg_bytes[chunk_idx * chunk_size:(chunk_idx + 1) * chunk_size]
-                await websocket.send_bytes(bytes([frame_counter, chunk_idx, total_chunks]) + chunk)
+                async with send_lock:
+                    await websocket.send_bytes(bytes([frame_counter, chunk_idx, total_chunks]) + chunk)
+                if chunk_idx % 4 == 3:
+                    await asyncio.sleep(0)
 
     async def telemetry_loop():
         while not stop_event.is_set():
@@ -625,6 +681,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 await send_json({
                     "type": "stats", "engine": engine_for_mode(),
                     "vram": vram, "temp": temp, **latest_stats,
+                    'ready': pipeline_ready, 'inflight_frames': len(outstanding_frames),
                 })
 
     async def control_loop():
@@ -636,16 +693,22 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             try:
                 data = validate_controls(data, (output_width, output_height))
                 width, height = requested_resolution(data)
+                if resolution_locked() and (width, height) != (output_width, output_height):
+                    await send_json(configuration_error('resolution_locked'))
+                    continue
                 resizing = (width, height) != (output_width, output_height) or not pipeline_ready
                 if resizing:
                     pending_frame = None
                     frame_available.clear()
                     assembler.clear()
-                    await send_json({"type": "status", "status": f"Loading {width} x {height} output..."})
+                    backend = 'TensorRT' if enable_tensorrt else 'PyTorch'
+                    await send_json({'type': 'status', 'status': f'Loading {width} x {height} {backend} output...',
+                                     'ready': False, 'engine': f'{backend} (Preparing)'})
                 await loop.run_in_executor(model_executor, apply_controls, data)
                 await send_json({"type": "configured", "status": "Connected (Streaming)",
                                  "width": output_width, "height": output_height, "engine": engine_for_mode(),
-                                 "ready": pipeline_ready, "mode": current_mode})
+                                 "ready": pipeline_ready, "mode": current_mode,
+                                 'resolution_locked': resolution_locked()})
                 if current_mode != "img2img":
                     pending_frame = None
                     frame_available.clear()
@@ -675,6 +738,12 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 
                 if not pipeline_ready or current_mode != mode:
                     continue
+                await wait_for_frame_credit()
+                if not pipeline_ready or current_mode != mode:
+                    continue
+                if mode == 'img2img' and pending_frame is not None:
+                    frame_bytes, pending_frame = pending_frame, None
+                    frame_available.clear()
                 started = time.perf_counter()
                 revision = pipeline_revision
                 result = await loop.run_in_executor(model_executor, process_frame, mode, frame_bytes)
@@ -724,6 +793,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             "width": output_width, "height": output_height,
             "protocol": PROTOCOL_VERSION, "ready": pipeline_ready,
             "vram": vram, "temp": temp,
+            'resolution_locked': resolution_locked(), 'latency_probe': True, 'frame_ack': True,
         })
         tasks = [asyncio.create_task(supervise(generation_loop(mode))) for mode in ("txt2img", "img2img")]
         tasks.append(asyncio.create_task(supervise(telemetry_loop())))
@@ -739,6 +809,16 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         continue
                     if data.get("type") == "ping":
                         await send_json({"type": "pong", "sent_at": data.get("sent_at")})
+                    elif data.get('type') == 'client_options' and data.get('frame_ack') is True:
+                        value = data.get('frame_window', 3)
+                        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 6:
+                            ack_enabled, frame_window = True, value
+                            frame_credit.set()
+                    elif data.get('type') == 'frame_ack':
+                        frame_id = data.get('frame_id')
+                        if isinstance(frame_id, int) and not isinstance(frame_id, bool):
+                            outstanding_frames.discard(frame_id)
+                            frame_credit.set()
                     elif data.get("type") == "control" or any(
                         key in data for key in ("prompt", "prompt_a", "mode", "seed", "strength", "blend")
                     ):

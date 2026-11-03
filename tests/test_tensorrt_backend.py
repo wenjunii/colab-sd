@@ -68,6 +68,7 @@ class TensorRTChecks(unittest.TestCase):
                     patch.object(backend, 'package_requirement'), \
                     patch.object(torch.cuda, 'is_available', return_value=True), \
                     patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)), \
+                    patch.object(torch.cuda, 'get_device_name', return_value='unit-test GPU'), \
                     patch.object(torch.cuda, 'synchronize'), patch('builtins.print'):
                 adapter = backend.compile_unet(FakeUNet(), 32, 16, 2, root)
                 self.assertEqual(adapter.batch_size, 2)
