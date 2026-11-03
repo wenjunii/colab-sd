@@ -1,8 +1,10 @@
 import ast
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -175,6 +177,43 @@ class ProjectToolsChecks(unittest.TestCase):
             syncer.run_cmd(['git', 'commit', '--message', message], self.root)
         self.assertEqual(run.call_args.args[0][-1], message)
         self.assertFalse(run.call_args.kwargs.get('shell', False))
+
+    def test_build_scratch_is_removed_after_success_or_failure_without_touching_other_files(self):
+        for fail in (False, True):
+            with self.subTest(failed_check=fail):
+                sentinel = self.root / 'keep-model-cache'
+                sentinel.write_text('keep this')
+                original_environment = os.environ.copy()
+                scratch_paths = []
+
+                def run(command, root, check=True, env=None):
+                    scratch = Path(env['TMPDIR'])
+                    self.assertEqual(env['TMP'], str(scratch))
+                    self.assertEqual(env['TEMP'], str(scratch))
+                    self.assertEqual(env['PYTHONDONTWRITEBYTECODE'], '1')
+                    self.assertTrue(scratch.is_dir())
+                    scratch_paths.append(scratch)
+                    # A real child process must inherit the same temporary root.
+                    subprocess.run([sys.executable, '-c',
+                                    'import pathlib,tempfile; '
+                                    'pathlib.Path(tempfile.gettempdir(), "child-scratch.txt").write_text("temporary")'],
+                                   env=env, check=True)
+                    self.assertTrue((scratch / 'child-scratch.txt').is_file())
+                    if fail:
+                        raise syncer.SyncError('failed check; diagnostics retained in command output')
+                    return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+                with patch.object(syncer, 'run_cmd', side_effect=run), patch('builtins.print'):
+                    if fail:
+                        with self.assertRaisesRegex(syncer.SyncError, 'failed check'):
+                            syncer.build_and_check(self.root)
+                    else:
+                        syncer.build_and_check(self.root)
+                self.assertTrue(scratch_paths)
+                self.assertEqual(len(set(scratch_paths)), 1)
+                self.assertFalse(scratch_paths[0].exists())
+                self.assertEqual(sentinel.read_text(), 'keep this')
+                self.assertEqual(dict(os.environ), original_environment)
 
     def test_sync_build_failure_never_stages_or_pushes(self):
         with patch.object(syncer, 'build_and_check', side_effect=syncer.SyncError('failed tests')), \
