@@ -128,6 +128,8 @@ def onConnect(dat):
     parent().store('connected', True)
     parent().store('server_ready', False)
     parent().store('handshake_complete', False)
+    parent().store('frame_ack_supported', False)
+    parent().store('pending_frame_acks', [])
     parent().store('last_frame_receive', time.perf_counter())
     parent().store('last_send_time', 0.0)
     parent().store('last_ping_time', 0.0)
@@ -138,8 +140,12 @@ def onDisconnect(dat):
     if p_status is not None:
         p_status.val = last_error or 'Disconnected'
     parent().store('connected', False)
+    parent().store('resolution_locked', False)
     parent().store('server_ready', False)
     parent().store('handshake_complete', False)
+    probe = op('latency_ws')
+    if probe:
+        probe.par.active = False
     p_eng = getattr(parent().par, 'Engine', None)
     if p_eng is not None:
         p_eng.val = '--'
@@ -149,9 +155,10 @@ def onDisconnect(dat):
     p_gpu = getattr(parent().par, 'Gputime', None)
     if p_gpu is not None:
         p_gpu.val = '-- ms'
-    p_ping = getattr(parent().par, 'Ping', None)
-    if p_ping is not None:
-        p_ping.val = '-- ms'
+    for name in ('Ping', 'Streamrtt'):
+        p_ping = getattr(parent().par, name, None)
+        if p_ping is not None:
+            p_ping.val = '-- ms'
     p_vram = getattr(parent().par, 'Vram', None)
     if p_vram is not None:
         p_vram.val = '--'
@@ -220,7 +227,7 @@ def onReceiveText(dat, rowIndex, message):
         elif msg_type == 'status' and str(data.get('status', '')).startswith('Loading'):
             parent().store('server_ready', False)
         if msg_type == 'pong' and isinstance(data.get('sent_at'), (int, float)):
-            p_ping = getattr(parent().par, 'Ping', None)
+            p_ping = getattr(parent().par, 'Streamrtt', None)
             if p_ping is not None:
                 p_ping.val = f"{(time.perf_counter() - data['sent_at']) * 1000:.1f} ms"
         
@@ -231,6 +238,18 @@ def onReceiveText(dat, rowIndex, message):
 
         if msg_type == 'welcome':
             parent().store('handshake_complete', True)
+            parent().store('frame_ack_supported', bool(data.get('frame_ack', False)))
+            parent().store('resolution_locked', bool(data.get('resolution_locked', False)))
+            if 'width' in data and 'height' in data:
+                width, height = int(data['width']), int(data['height'])
+                parent().store('server_resolution', (width, height))
+                p_resolution = getattr(parent().par, 'Resolution', None)
+                if p_resolution is not None:
+                    p_resolution.val = str(width) if width == height else f'{width}x{height}'
+            probe = op('latency_ws')
+            if probe:
+                probe.par.active = bool(data.get('latency_probe', False))
+            send_client_options()
             send_control(force=True)
             vram = data.get('vram', '--')
             temp = data.get('temp', '--')
@@ -285,7 +304,9 @@ def onReceiveBinary(dat, contents):
         return
     
     now = time.perf_counter()
-    if frame_id != current_frame_id or now - frame_started > 1.0:
+    # Frames arrive in order over TCP. A slow transfer must not lose its
+    # assembly state: dropping it would also strand the server's ACK credit.
+    if frame_id != current_frame_id:
         current_frame_id = frame_id
         frame_chunks = {}
         current_chunk_count = total_chunks
@@ -302,6 +323,10 @@ def onReceiveBinary(dat, contents):
         last_frame_bytes = assembled
         parent().store('last_frame_bytes', assembled)
         parent().store('display_pending', True)
+        if parent().fetch('frame_ack_supported', False):
+            pending = list(parent().fetch('pending_frame_acks', []))
+            pending.append(frame_id)
+            parent().store('pending_frame_acks', pending[-6:])
         parent().store('last_frame_receive', time.perf_counter())
         
         # Adaptive Flow Control: unlock sending immediately upon frame receipt
@@ -334,6 +359,15 @@ def onReceiveBinary(dat, contents):
         # The frame-start callback displays only the newest frame once per TD
         # frame, rather than decoding every buffered network frame immediately.
         frame_chunks.clear()
+
+def send_client_options():
+    if not parent().fetch('frame_ack_supported', False):
+        return
+    par = getattr(parent().par, 'Framewindow', None)
+    window = int(par.eval()) if par is not None else 3
+    ws = op('websocket1')
+    if ws:
+        ws.sendText(json.dumps({'type': 'client_options', 'frame_ack': True, 'frame_window': window}))
 
 def output_size():
     p_resolution = getattr(parent().par, 'Resolution', None)
@@ -388,6 +422,35 @@ def send_control(force=False, strength_override=None):
             print('[StreamDiffusion] Error sending control:', e)
     else:
         print(f"[StreamDiffusion] WebSocket offline, queued parameters.")
+'''
+
+LATENCY_CODE = '''import json
+import time
+
+def onConnect(dat):
+    parent().store('probe_ready', False)
+    parent().store('probe_waiting', False)
+    parent().store('probe_sent_at', 0.0)
+
+def onDisconnect(dat):
+    parent().store('probe_ready', False)
+    parent().par.Ping = '-- ms'
+
+def onReceiveText(dat, rowIndex, message):
+    try:
+        data = json.loads(message)
+        if data.get('type') == 'auth_required':
+            token = str(parent().par.Accesstoken.eval()).strip()
+            if token:
+                dat.sendText(json.dumps({'type': 'auth', 'token': token}))
+        elif data.get('type') == 'probe_ready':
+            parent().store('probe_ready', True)
+        elif (data.get('type') == 'pong' and isinstance(data.get('sent_at'), (int, float))
+              and data['sent_at'] == parent().fetch('probe_sent_at', None)):
+            parent().store('probe_waiting', False)
+            parent().par.Ping = f"{(time.perf_counter() - data['sent_at']) * 1000:.1f} ms"
+    except (ValueError, TypeError, AttributeError):
+        pass
 '''
 
 EXEC_SEND_FRAME_CODE = '''import cv2
@@ -485,6 +548,20 @@ def onFrameStart(frame):
         receiver = op('script_receiver')
         if receiver:
             receiver.cook(force=True)
+        acknowledgements = parent().fetch('pending_frame_acks', [])
+        parent().store('pending_frame_acks', [])
+        stream = op('websocket1')
+        if stream and stream.par.active.eval():
+            for frame_id in acknowledgements:
+                stream.sendText(json.dumps({'type': 'frame_ack', 'frame_id': frame_id}))
+
+    if parent().fetch('client_options_pending', False):
+        parent().store('client_options_pending', False)
+        for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
+            callback = op(name)
+            if callback:
+                callback.module.send_client_options()
+                break
 
     if parent().fetch('control_pending', False):
         parent().store('control_pending', False)
@@ -495,6 +572,19 @@ def onFrameStart(frame):
                 break
 
     ws = op('websocket1')
+    probe = op('latency_ws')
+    if probe and parent().fetch('probe_ready', False):
+        sent = parent().fetch('probe_sent_at', 0.0)
+        waiting = parent().fetch('probe_waiting', False)
+        if now - sent >= (10.0 if waiting else 2.0):
+            if waiting:
+                parent().par.Ping = 'Timeout (>10s)'
+            parent().store('probe_sent_at', now)
+            parent().store('probe_waiting', True)
+            try:
+                probe.sendText(json.dumps({'type': 'ping', 'sent_at': now}))
+            except Exception:
+                parent().store('probe_ready', False)
     if parent().fetch('connected', False) and now - parent().fetch('last_frame_receive', now) > 2.0:
         p_fps = getattr(parent().par, 'Fps', None)
         if p_fps is not None:
@@ -611,6 +701,11 @@ def server_port():
     except ValueError:
         return 443
 
+def probe_url():
+    parsed = urlsplit(str(parent().par.Serverurl.eval()).strip())
+    path = parsed.path.rsplit('/ws/stream', 1)[0] + '/ws/ping'
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ''))
+
 def onValueChange(par, prev):
     try:
         if par.name == 'Serverlocation':
@@ -641,6 +736,14 @@ def onValueChange(par, prev):
                 normalized = urlunsplit((scheme, parsed.netloc, path, parsed.query, ''))
                 if normalized != value:
                     par.val = normalized
+        elif par.name == 'Framewindow':
+            parent().store('client_options_pending', True)
+        elif par.name == 'Resolution' and parent().fetch('resolution_locked', False):
+            width, height = parent().fetch('server_resolution', (512, 512))
+            fixed = str(width) if width == height else f'{width}x{height}'
+            if str(par.eval()) != fixed:
+                par.val = fixed
+                parent().par.Status = f'TensorRT fixed at {width} x {height}; select startup size in server launcher'
         elif par.name in ['Prompta', 'Promptb', 'Promptblend', 'Negprompt', 'Prompt', 'Mode', 'Source', 'Strength', 'Seed', 'Resolution']:
             # Coalesce simultaneous CHOP/slider changes into one control packet.
             parent().store('control_pending', True)
@@ -764,11 +867,13 @@ pages 1 StreamDiffusion
 772804868 Engine "Acceleration Engine" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 23
 772804868 Fps "Effective FPS" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 24
 772804868 Gputime "GPU Inference" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 25
-772804868 Ping "Network Ping (RTT)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
+772804868 Ping "Network Probe RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 26
 772804868 Vram "GPU VRAM" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 27
 772804868 Gputemp "GPU Temp" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 28
 772804868 Servertime "Server Frame Processing" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 29
 772804868 Frametime "Frame Round Trip" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 30
+772804868 Streamrtt "Stream Control RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 31
+772804879 Framewindow "Video Buffer (frames)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 1 "1 (lowest latency)" 2 "2" 3 "3 (balanced)" 6 "6 (higher throughput)" 32
 ?
 '''
 
@@ -802,6 +907,8 @@ Vram 67109184 "--"
 Gputemp 67109184 "--"
 Servertime 67109184 "-- ms"
 Frametime 67109184 "-- ms"
+Streamrtt 67109184 "-- ms"
+Framewindow 67108928 3
 ?
 '''
 
@@ -882,6 +989,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
         'websocket1_callbacks1.text': WEBSOCKET_CODE,
         'parexec_controls.text': PAREXEC_CODE,
         'exec_send_frame.text': EXEC_SEND_FRAME_CODE,
+        'latency_callbacks.text': LATENCY_CODE,
     }
     for name, code in callbacks.items():
         compile(code, name, 'exec')
@@ -894,7 +1002,16 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
         '?\nactive 17 on parent().par.Connect\nnetaddress 17 "" parent().par.Serverurl\n'
         'port 17 443 op("parexec_controls").module.server_port()\n'
         'callbacks 0 websocket1_callbacks\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh'
+    (component / 'latency_ws.n').write_text(
+        'DAT:websocket\ntile -350 300 130 90\nflags = parlanguage 0\nend\n', encoding='utf-8', newline='\n')
+    (component / 'latency_ws.parm').write_text(
+        '?\nactive 0 off\nnetaddress 17 "" op("parexec_controls").module.probe_url()\n'
+        'port 17 443 op("parexec_controls").module.server_port()\n'
+        'callbacks 0 latency_callbacks\nlanguage 0 text\n?\n', encoding='utf-8', newline='\n')
+    (component / 'latency_callbacks.n').write_text(
+        'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
+    (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')
@@ -913,7 +1030,8 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     for name, code in callbacks.items():
         write_text_file(component / name, code)
     entries = [line.strip() for line in toc.read_text(encoding='utf-8').splitlines() if line.strip()]
-    for name in ('in_audio.n', 'in_audio.parm', 'fit_send.n', 'fit_send.parm'):
+    for name in ('in_audio.n', 'in_audio.parm', 'fit_send.n', 'fit_send.parm',
+                 'latency_ws.n', 'latency_ws.parm', 'latency_callbacks.n', 'latency_callbacks.parm', 'latency_callbacks.text'):
         entry = 'project1/StreamDiffusion_Remote/' + name
         if entry not in entries:
             entries.append(entry)

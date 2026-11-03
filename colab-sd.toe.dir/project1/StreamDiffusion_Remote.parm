@@ -28,4 +28,6 @@ Vram 67109184 "--"
 Gputemp 67109184 "--"
 Servertime 67109184 "-- ms"
 Frametime 67109184 "-- ms"
+Streamrtt 67109184 "-- ms"
+Framewindow 67108928 3
 ?

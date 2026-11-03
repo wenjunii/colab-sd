@@ -95,3 +95,8 @@ project1/StreamDiffusion_Remote/in_audio.n
 project1/StreamDiffusion_Remote/in_audio.parm
 project1/StreamDiffusion_Remote/fit_send.n
 project1/StreamDiffusion_Remote/fit_send.parm
+project1/StreamDiffusion_Remote/latency_ws.n
+project1/StreamDiffusion_Remote/latency_ws.parm
+project1/StreamDiffusion_Remote/latency_callbacks.n
+project1/StreamDiffusion_Remote/latency_callbacks.parm
+project1/StreamDiffusion_Remote/latency_callbacks.text

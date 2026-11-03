@@ -80,7 +80,9 @@ flowchart LR
 3. Execute cells 1 through 3. In **Step 2**, enable **`USE_GOOGLE_DRIVE`** to keep model downloads between Colab sessions, then authorize Drive access when prompted. Leave it off to use temporary runtime storage.
 4. In **Cell 4 (Launch Server)**, configure the **1-Toggle Acceleration Switch**:
    * **`ENABLE_TENSORRT = False` (Default):** PyTorch Native FP16 without engine compilation.
-   * **`ENABLE_TENSORRT = True`:** Installs a Torch-TensorRT release matching the existing PyTorch build, then compiles and validates the UNet for both modes. Requires Python 3.11+ and PyTorch 2.11+. Compilation can take several minutes at startup and after an output-size change. TinyVAE stays in PyTorch. Actual FPS and latency depend on GPU, resolution, and connection.
+   * **`ENABLE_TENSORRT = True`:** Installs a Torch-TensorRT release matching the existing PyTorch build, then loads or compiles and validates the UNet for both modes. Requires Python 3.11+ and PyTorch 2.11+. A new profile can take several minutes to compile. TinyVAE stays in PyTorch. Actual FPS and latency depend on GPU, resolution, and connection.
+   * **`STARTUP_RESOLUTION`:** Choose any of the 16 output presets before launching. TensorRT uses this size for both engines; **`LOCK_TENSORRT_RESOLUTION = True`** prevents an accidental live rebuild. TouchDesigner adopts the server's size on connection. To change it, stop Cell 4, select another size, and rerun. Advanced users can disable the lock; live changes then pause generation while another profile loads or compiles.
+   * Keep **`REUSE_TENSORRT_ENGINES = True`** and **`PERSIST_TENSORRT_CACHE = True`** to reuse validated engines. With Step 2 Drive storage enabled, archives persist in Drive; otherwise they remain on runtime disk.
 5. Run Cell 4. The server loads cached model weights (downloading any missing files), completes GPU warmup, and displays your live WebSocket endpoint:
    ```text
    StreamDiffusion is ready
@@ -102,7 +104,11 @@ DRIVE_MODEL_FOLDER = "StreamDiffusion/models"
 
 Models are then cached at **`/content/drive/MyDrive/StreamDiffusion/models`**. Finish the first server startup so SD-Turbo, TinyVAE, and their model configuration/tokenizer files are downloaded. In later Colab runtimes, enable the same option, authorize Drive, and keep the same folder: existing model weights load from Drive rather than downloading again. Hugging Face may still check for updated files and download anything new or missing. Enabling Drive does not copy an earlier runtime's local cache automatically, so the first Drive-backed run may download weights once more.
 
-Allow several GB of free Drive space. Loading weights from mounted Drive may be slower than runtime disk, but the loaded models still run on the Colab GPU. Python packages and source setup remain local to each new runtime; TensorRT engines still compile because engine reuse remains disabled. This option persists the model repository cache, not the Python environment or TensorRT engines.
+Allow several GB for model weights and several additional GB **per TensorRT resolution**. Loading from mounted Drive may be slower than runtime disk, but loaded models run on the Colab GPU. Python packages and source setup remain local to each new runtime.
+
+With the Step 4 cache options enabled, full-weight TensorRT archives are stored at **`/content/drive/MyDrive/StreamDiffusion/tensorrt`** (a sibling of your selected model folder). The first launch builds and validates both engines; later launches load a matching archive, check its checksum, and compare its output against PyTorch before readiness. Cache keys include model weights, resolution, batch size, GPU model/capability, operating system, Python, and compiler/library versions. A different Colab GPU or software environment builds its own profile. Missing, corrupt, or numerically invalid archives rebuild. A cache write failure is logged; the working engine can still run, but the next launch must rebuild.
+
+This uses [Torch-TensorRT deployment archives](https://docs.pytorch.org/TensorRT/user_guide/saving_models.html) containing immutable weights. The earlier stripped/refit engine cache remains disabled because a hardware test returned NaNs. Reuse avoids compilation, but model loading, Drive transfer, validation, and warmup still take time. Keep the folder private and monitor Drive quota; disable persistence to keep engine files only in the current VM.
 
 The setup prints the active cache location and checks it is writable. Drive authorization or storage failures stop setup; it does not silently substitute a temporary cache. Turning the option off on a later setup run selects the runtime's local cache without deleting Drive files. Stop a running launch cell and rerun Step 4 after changing storage; the server inherits the setup cell's cache settings in a fresh Python process.
 
@@ -153,7 +159,7 @@ On Linux, replace `py -3.11` with `python3.11`. The launcher finds `cloudflared`
 
 Keep the server terminal running (locally, through SSH, or in your workstation remote desktop session). **Ctrl+C** stops its server and tunnel. The pairing token persists in `.workstation/access-token`; server/tunnel logs are under `.workstation/StreamDiffusion/bridge_logs/`. `--runtime PATH` selects another dedicated installation folder and must be passed to both setup and start. Updating this repository updates the bridge scripts used at the next launch; rerun setup when dependency or upstream pins change.
 
-Native **PyTorch FP16** is the default. `start --tensorrt` requests matching Torch-TensorRT wheels and compilation of both UNets, with strict failure instead of silent fallback. TensorRT compatibility and image quality must be checked on each workstation GPU/software combination; the existing A100 Colab validation does not establish RTX or native Windows TensorRT compatibility. Start with FP16 when configuring a new workstation.
+Native **PyTorch FP16** is the default. `start --tensorrt --resolution 768x576` selects the startup TensorRT profile, with strict failure instead of silent fallback. `--engine-cache PATH` selects persistent archive storage; the default is inside the runtime checkout. `--no-engine-cache` disables archive reuse, and `--allow-tensorrt-resize` permits live profile changes with a loading pause. TensorRT compatibility and image quality must be checked on each workstation GPU/software combination. The hardware checks below cover specific software versions; start with FP16 when configuring a new workstation.
 
 Workstation mode currently uses the same legacy StreamDiffusion model dependency pins as Colab. Its separate environment and access token do not patch those dependencies; the remaining migration is described in [SECURITY.md](SECURITY.md).
 
@@ -169,7 +175,7 @@ Workstation mode currently uses the same legacy StreamDiffusion model dependency
    * **Generation Mode:** Choose `Text to Image` or `Image / Noise to Image`.
    * **Prompt A / Prompt B & Blend:** Set your creative prompts and blend between them with the slider.
 4. Video streams directly to `null1` in real time with live telemetry!
-5. Choose **Output Resolution / Ratio** to trade detail for speed and select the canvas shape. Changing resolution pauses generation while model buffers reload. TensorRT rebuilds both engines for the new dimensions, which can take several minutes. 512 × 512 is the model's preferred size. Larger output uses more GPU memory and bandwidth and may reduce FPS.
+5. Choose **Output Resolution / Ratio** to trade detail for speed and select the canvas shape. PyTorch changes reload model buffers. TensorRT locks the server's startup size by default: select another size in the launcher and restart it. With the advanced lock disabled, changing size pauses output while both engines load or compile. 512 × 512 is the model's preferred size. Larger output uses more GPU memory and bandwidth and may reduce FPS.
 
 | Aspect ratio | Output presets |
 | :--- | :--- |
@@ -185,7 +191,7 @@ Maximum generated area is 786,432 pixels (1024 × 768); square output stops at 7
 
 Update both sides together: use the current Colab notebook and reload `colab-sd.toe` or replace the component with the current `StreamDiffusion_Remote.tox`. In Colab, run the setup and write-server cells before restarting the launch cell. Copy the new tunnel URL into TouchDesigner; old `trycloudflare.com` URLs can expire. A version mismatch is reported in Status.
 
-For a first connection, keep 512 × 512 or choose a smaller output. After frames arrive, compare Effective FPS, Network Ping, and Frame Round Trip before increasing resolution or enabling TensorRT. CPU tests check behavior; they do not establish GPU image quality or live latency.
+For a first connection, keep 512 × 512 or choose a smaller output. After frames arrive, compare Effective FPS, Network Probe RTT, Stream Control RTT, and Frame Round Trip before increasing resolution or enabling TensorRT. CPU tests check behavior; they do not establish GPU image quality or live latency.
 
 ---
 
@@ -200,7 +206,7 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 | **Workstation Access Token** | String | Empty | Pairing token printed by the workstation launcher; blank for Colab. |
 | **Connect to Server** | Toggle | `Off` | Connects or disconnects the WebSocket stream. |
 | **Generation Mode** | Menu | `Text-to-Video` | `txt2img` (continuous AI synthesis) or `img2img` (audio/visual stylization). |
-| **Output Resolution / Ratio** | Menu | `512 × 512` | 16 presets for 1:1, 4:3, 3:4, 16:9, and 9:16, up to 1024 × 768 or 768 × 1024. Changing size reloads the Colab pipeline. |
+| **Output Resolution / Ratio** | Menu | `512 × 512` | 16 presets for 1:1, 4:3, 3:4, 16:9, and 9:16, up to 1024 × 768 or 768 × 1024. Adopts the server's startup size; TensorRT locks it by default. |
 | **Input Source** | Menu | `External Input` | `External Input (in1)` (wired cable), `Webcam (cam_in)`, or `Internal Noise`. |
 | **Display Mode** | Menu | `AI Output Only` | `ai` (AI output), `sidebyside` (Input \| Output), `wipe` (50/50 split), `input` (raw input). |
 | **Prompt A** | String | `cinematic cyberpunk...` | Primary text prompt steering diffusion synthesis. |
@@ -218,10 +224,12 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 | **Audio -> Denoise Gain** | Float (0.0–1.0) | `0.3` | Dynamic denoise strength boost proportional to audio peak amplitude. |
 | **Audio Beat Threshold** | Float (0.1–1.0) | `0.8` | Audio level threshold that triggers an automatic seed randomization on kick drum peaks. |
 | **Status** | String (Display) | `Disconnected` | Live connection status and streaming FPS. |
-| **Acceleration Engine** | String (Display) | `--` | `PyTorch (FP16)` or `TensorRT (UNet)` for the current mode. TinyVAE remains in PyTorch. |
+| **Acceleration Engine** | String (Display) | `--` | `PyTorch (FP16)` or `TensorRT (UNet)` for the current mode. Requested TensorRT shows Preparing/Unavailable during loading/failure. TinyVAE remains in PyTorch. |
 | **Effective FPS** | String (Display) | `0.0 FPS` | Measured video delivery rate received from Colab. |
 | **GPU Inference** | String (Display) | `-- ms` | Server-side GPU forward pass latency per frame. |
-| **Network Ping (RTT)**| String (Display) | `-- ms` | Application ping/pong time, measured every two seconds, separate from frame generation. |
+| **Network Probe RTT** | String (Display) | `-- ms` | Ping/pong on a separate authenticated WebSocket every two seconds; avoids the video connection's queue. Includes routing, TLS, and application scheduling; not ICMP ping. |
+| **Stream Control RTT** | String (Display) | `-- ms` | Ping/pong on the video WebSocket, including any queued video traffic. |
+| **Video Buffer (frames)** | Menu | `3 (balanced)` | Maximum unacknowledged output frames: 1, 2, 3, or 6. Lower values reduce backlog; high network RTT can then limit FPS. |
 | **Server Frame Processing** | String (Display) | `-- ms` | Input JPEG decode, inference, output conversion, and JPEG encoding; excludes worker queue and network time. |
 | **Frame Round Trip** | String (Display) | `-- ms` | Approximate input-send-to-result time in img2img, including server work and network transport. Not camera-to-screen latency; watchdog retries can affect this estimate. |
 | **GPU VRAM** | String (Display) | `--` | Remote GPU memory usage (e.g. `2.4/15.0GB (16%)`). |
@@ -249,6 +257,8 @@ Instead of flooding the network on a blind timer, TouchDesigner employs **reacti
 * Colab receives while inference runs, retaining only the newest waiting input frame. Rapid control updates similarly merge into the latest values while the model worker is busy.
 * All model operations share one worker to prevent concurrent mutation of the shared pipelines. JPEG processing and cached GPU telemetry run off the WebSocket event loop; telemetry sampling does not pause frame generation.
 * Text generation has a configurable ceiling of 60 FPS (`MAX_STREAM_FPS` environment variable, range 1–120), replacing the old 25 FPS ceiling. This is a pacing limit, not a promised delivery rate.
+* Both modes negotiate a bounded output window (three frames by default). TouchDesigner acknowledges completed frames after its next display cook; generation waits when the window is full. This prevents sustained production from building an unbounded TCP video backlog. Older clients retain the previous streaming behavior.
+* Control replies can interleave between binary chunks. A second `/ws/ping` WebSocket measures application RTT independently of video traffic and uses the same workstation authentication.
 
 ### 3. Dynamic Timestep Scheduling (`t_index_list`)
 StreamDiffusion uses sparse timesteps for real-time inference:
@@ -276,9 +286,10 @@ Output JPEG quality adapts without changing the selected dimensions. The frame b
 ## 💡 Tips & Troubleshooting
 
 * **Reloading the Component in TouchDesigner:** If you make changes or pull an update while TouchDesigner is running, select **File $\rightarrow$ Revert to Saved**, or drag and drop `StreamDiffusion_Remote.tox` into your project. TouchDesigner does not reload `.toe` files from disk automatically while open.
-* **Checking Engine Status:** Both modes use `TensorRT (UNet)` only after their separately compiled UNets pass output validation. Text generation uses batch one and the two-timestep image stream uses batch two. TinyVAE remains in PyTorch. Builder timing caches are separated by dimensions, batch size, GPU capability, and software versions. Engine reuse is disabled: a real TensorRT 10.15 cache/refit test returned NaNs, which output validation caught before readiness. Each startup or resolution change rebuilds immutable engines. Replacing the Colab runtime also discards its builder timing cache.
+* **Checking Engine Status:** Both modes use `TensorRT (UNet)` only after their UNets pass output validation, whether loaded from full-weight archives or newly compiled. Text generation uses batch one and the two-timestep image stream uses batch two. TinyVAE remains in PyTorch. Set the startup resolution before launching; the default lock prevents accidental live recompilation. Preparing/Unavailable reflects requested TensorRT honestly instead of displaying PyTorch during a failed reload.
 * **Old TensorRT Fallback:** `No module named 'polygraphy'` with CUDA 13 indicates the old StreamDiffusion installer path: it only handles CUDA 11/12 and can return without installing anything. The updated notebook uses [Torch-TensorRT](https://docs.pytorch.org/TensorRT/getting_started/installation.html), preserves the installed PyTorch/CUDA build, and verifies the actual backend before creating a tunnel. Update the notebook and rerun its write-server and launch cells; installing Polygraphy alone does not modernize the old compiler.
-* **Measuring Improvements:** Compare Effective FPS, Server Frame Processing, Frame Round Trip, and Network Ping at the same output size and GPU type. The single-image batch reduces wasted text-generation work; live FPS and end-to-end latency still need measurement on your Colab connection. Start at 384 or 512, then try 256 for speed.
+* **Thousands of ms RTT with acceptable FPS:** Throughput can remain around 10 FPS while old frames queue for seconds. Compare **Network Probe RTT** with **Stream Control RTT**: a low probe with a high stream reading points toward video-path congestion or buffering. If both stay high even with video paused, investigate the Colab/Cloudflare route and local connection; the probe still includes application scheduling. Try **Video Buffer = 1 or 2** and **MAX_FPS = 10–15**. A window of one limits throughput to roughly one frame per application round trip, so use three or six when that tradeoff reduces FPS too much. A nearby workstation over LAN/VPN avoids the Colab tunnel route.
+* **Measuring Improvements:** Compare Effective FPS, Server Frame Processing, Frame Round Trip, Network Probe RTT, and Stream Control RTT at the same output size and GPU type. Start at 384 or 512, then try 256 for speed. These measurements do not establish camera-to-screen latency.
 * **Connection Status:** Uploads pause until the socket is connected and the server confirms the requested mode and output size. The FPS readout falls to zero if no frames arrive. HTTP(S) tunnel addresses pasted into the URL control normalize to WS(S) and receive `/ws/stream` when no path was supplied.
 * **Matching Versions:** Update the Colab notebook and TouchDesigner component together. A mismatched handshake displays a version message instead of leaving uploads silently paused.
 * **Recovery:** The 250ms upload watchdog can retry an input after a missing response. Incomplete input frames expire after one second and have a 512KB reassembly limit. If configuration recovery also fails, readiness becomes false and a failure status is shown. Internal exception details stay in the Colab logs. Use Submit Prompts to retry, choose a smaller size, or restart the Colab launch cell.
@@ -292,7 +303,9 @@ In an isolated Python 3.11 environment, install `requirements-test.txt` with the
 
 GPU integration verified on 2026-10-31 at 512 × 512 with an A100, Python 3.13.16, PyTorch 2.11.0+cu130, Torch-TensorRT 2.11.0, and TensorRT 10.15.1.29. Both UNets compiled completely into TensorRT and passed numerical comparison against native output. WebSocket checks decoded non-flat JPEG frames in both modes, changed image denoise strength from 0.2 to 0.9, blended prompts, and switched back to text generation. Larger profiles and other GPU types need their own integration checks. The compiler exports standard attention operations and uses the validated FP16 builder configuration to avoid FlashAttention conversion and strong-typing compiler failures.
 
-Windows workstation GPU integration verified on 2026-11-02 with an RTX 3080 Ti Laptop GPU (16 GB), NVIDIA driver 617.42, Python 3.11, Torch 2.13.0+cu130, and TorchVision 0.28.0+cu130. Real launcher checks passed over both direct loopback WebSockets and a public TLS Cloudflare tunnel, including incorrect-token rejection, authenticated text/image generation, prompt blending, denoise strengths 0.2/0.9, and resizing from 512 × 512 to 384 × 384. JPEG dimensions and spatial image variation were checked after buffer warmup. All 67 CPU/ASGI checks pass on Windows and Linux; Linux GPU inference and RTX TensorRT need separate hardware validation. These checks do not establish end-to-end TouchDesigner FPS or test a second physical LAN client.
+Windows workstation GPU integration verified on 2026-11-02 with an RTX 3080 Ti Laptop GPU (16 GB), NVIDIA driver 617.42, Python 3.11, Torch 2.13.0+cu130, and TorchVision 0.28.0+cu130. Real launcher checks passed over both direct loopback WebSockets and a public TLS Cloudflare tunnel, including incorrect-token rejection, authenticated text/image generation, prompt blending, denoise strengths 0.2/0.9, and resizing from 512 × 512 to 384 × 384. JPEG dimensions and spatial image variation were checked after buffer warmup. Linux GPU inference needs separate hardware validation. These checks do not establish end-to-end TouchDesigner FPS or test a second physical LAN client.
+
+Full-weight TensorRT archive reuse verified on 2026-11-03 on the same Windows RTX GPU with Python 3.11.9, Torch 2.11.0+cu130, Torch-TensorRT 2.11.0+cu130, and TensorRT 10.15.1.29. At 384 × 384, both modes passed native numerical comparison and generated non-flat JPEGs across strength/mode changes. A fresh process with the compiler disabled loaded both saved archives successfully: initial build/startup took 319 seconds, versus 55 seconds for reuse on local disk. These are hardware test measurements, not Colab/Drive startup guarantees. Mounted Drive transfer and reuse across separate Colab VMs still need a live Colab check. The CPU suite now includes 83 checks for bounded frame credits, independent probes, startup profiles, locked resize, archive rejection, and slow frame assembly.
 
 Windows setup:
 
@@ -315,7 +328,7 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `colab_server.py` | Model loading, recovery, generation, health, and WebSocket streaming |
 | `colab_setup.py` / `colab_launcher.py` | Colab environment setup and owned server/tunnel lifecycle |
 | `workstation.py` | Isolated Windows/Linux CUDA setup, pairing token, and LAN/VPN/Cloudflare launch |
-| `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, output validation, and per-mode builder timing caches |
+| `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, validated immutable deployment archives, and per-profile builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
 | `generate_notebook.py` | Self-contained notebook generation and freshness checking |
 

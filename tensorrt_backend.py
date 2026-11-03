@@ -1,9 +1,136 @@
 """Torch-TensorRT acceleration for current Colab Python/CUDA runtimes."""
 from pathlib import Path
+import hashlib
+from importlib.metadata import version, PackageNotFoundError
+import json
 import logging
+import os
+import platform
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import weakref
+
+_weight_hashes = weakref.WeakKeyDictionary()
+ENGINE_CACHE_SCHEMA = 1
+
+
+def weight_fingerprint(unet):
+    signature = tuple((name, value.data_ptr(), value._version, str(value.dtype), tuple(value.shape))
+                      for name, value in list(unet.named_parameters()) + list(unet.named_buffers()))
+    previous = _weight_hashes.get(unet)
+    if previous is not None and previous[0] == signature:
+        return previous[1]
+    digest = hashlib.sha256()
+    for name, value in sorted(unet.state_dict().items()):
+        digest.update(f'{name}:{value.dtype}:{tuple(value.shape)}'.encode())
+        import torch
+        digest.update(value.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+    result = digest.hexdigest()
+    _weight_hashes[unet] = (signature, result)
+    return result
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024**2), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def engine_metadata(unet, width, height, batch_size, torch_version, cuda_version,
+                    torchtrt_version, trt_version, gpu_name, capability):
+    try:
+        diffusers_version = version('diffusers')
+    except PackageNotFoundError:
+        diffusers_version = 'unavailable'
+    config = dict(unet.config) if hasattr(unet.config, 'items') else vars(unet.config)
+    config = {key: value for key, value in config.items() if not key.startswith('_')}
+    return dict(schema=ENGINE_CACHE_SCHEMA, weights=weight_fingerprint(unet), width=width, height=height,
+                batch=batch_size, dtype=str(unet.dtype), torch=torch_version, cuda=cuda_version,
+                torchtrt=torchtrt_version, tensorrt=trt_version, gpu=gpu_name, sm=list(capability),
+                platform=platform.system(), machine=platform.machine(), python=platform.python_version(),
+                diffusers=diffusers_version, config=hashlib.sha256(json.dumps(
+                    config, sort_keys=True, default=str).encode()).hexdigest(),
+                compiler='immutable-fp16-standard-attention-opt0')
+
+
+def load_engine_archive(directory, metadata, inputs, expected, reference=None):
+    """Load a full-weight immutable archive; never refit cached engines."""
+    import torch
+    archive, manifest = directory / 'unet.ts', directory / 'manifest.json'
+    if not archive.exists() or not manifest.exists():
+        return None
+    try:
+        record = json.loads(manifest.read_text(encoding='utf-8'))
+        if record['metadata'] != metadata:
+            return None
+        # Stage a single file on runtime disk so Drive is read only once.
+        with tempfile.TemporaryDirectory(prefix='bridge-trt-load-') as name:
+            local = Path(name) / 'unet.ts'
+            shutil.copyfile(archive, local)
+            if file_digest(local) != record['sha256']:
+                raise ValueError('TensorRT archive checksum mismatch')
+            module = torch.jit.load(str(local)).eval()
+        if 'tensorrt::execute_engine' not in str(module.inlined_graph):
+            raise ValueError('Archive does not contain a TensorRT execution graph')
+        torch.testing.assert_close(module(*inputs), expected, rtol=0.05, atol=0.05)
+        if reference is not None:
+            alternate = [inputs[0] * 0.5, inputs[1] * 0.5, inputs[2] * 0.5]
+            torch.testing.assert_close(module(*alternate), reference(*alternate), rtol=0.05, atol=0.05)
+        torch.cuda.synchronize()
+        print(f'>>> Loaded and validated full-weight TensorRT archive: {directory}', flush=True)
+        return module
+    except Exception as error:
+        logging.getLogger(__name__).warning('TensorRT archive rejected; rebuilding: %s', error)
+        return None
+
+
+def save_engine_archive(module, directory, metadata, inputs, expected, reference=None):
+    import torch
+    import torch_tensorrt
+    try:
+        with tempfile.TemporaryDirectory(prefix='bridge-trt-save-') as name:
+            local = Path(name) / 'unet.ts'
+            torch_tensorrt.save(module, str(local), output_format='torchscript', inputs=inputs)
+            # A successful export alone does not establish a usable cache.
+            loaded = torch.jit.load(str(local)).eval()
+            # FX can retain unused native parameters after full conversion.
+            # Freeze removes those duplicate weights from the deployment file.
+            try:
+                compact = torch.jit.freeze(loaded)
+                compact_path = Path(name) / 'compact.ts'
+                torch.jit.save(compact, str(compact_path))
+                compact_path.replace(local)
+                loaded = compact
+            except RuntimeError as error:
+                logging.getLogger(__name__).warning('Archive compaction unavailable; keeping full export: %s', error)
+            if 'tensorrt::execute_engine' not in str(loaded.inlined_graph):
+                raise ValueError('Saved graph has no TensorRT execution')
+            torch.testing.assert_close(loaded(*inputs), expected, rtol=0.05, atol=0.05)
+            if reference is not None:
+                alternate = [inputs[0] * 0.5, inputs[1] * 0.5, inputs[2] * 0.5]
+                torch.testing.assert_close(loaded(*alternate), reference(*alternate), rtol=0.05, atol=0.05)
+            torch.cuda.synchronize()
+            record = dict(metadata=metadata, sha256=file_digest(local))
+            temporary = directory / ('unet-' + os.urandom(8).hex() + '.tmp')
+            try:
+                shutil.copyfile(local, temporary)
+                temporary.replace(directory / 'unet.ts')
+            finally:
+                temporary.unlink(missing_ok=True)
+            manifest = directory / ('manifest-' + os.urandom(8).hex() + '.tmp')
+            try:
+                manifest.write_text(json.dumps(record, sort_keys=True), encoding='utf-8')
+                manifest.replace(directory / 'manifest.json')
+            finally:
+                manifest.unlink(missing_ok=True)
+        print(f'>>> Saved validated full-weight TensorRT archive: {directory}', flush=True)
+    except Exception as error:
+        logging.getLogger(__name__).warning('This engine works, but could not be cached; next launch will rebuild: %s', error)
 
 
 def package_requirement(torch_version, python_version=None):
@@ -77,7 +204,7 @@ class TensorRTUNet:
         return self
 
 
-def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tensorrt'):
+def compile_unet(unet, width, height, batch_size, cache_root=None):
     import torch
     import torch_tensorrt
     import tensorrt
@@ -96,6 +223,8 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
             return self.model(sample, timestep, encoder_hidden_states=encoder_hidden_states, return_dict=False)[0]
 
     graph = UNetGraph(unet).eval()
+    reuse_engines = os.environ.get('BRIDGE_TRT_ENGINE_REUSE', '1') == '1'
+    cache_root = cache_root or os.environ.get('BRIDGE_TRT_CACHE_DIR', 'engines/torch-tensorrt')
     inputs = [
         torch.randn((batch_size, unet.config.in_channels, height // 8, width // 8), device=unet.device, dtype=unet.dtype),
         torch.full((batch_size,), 999.0, device=unet.device, dtype=torch.float32),
@@ -104,10 +233,20 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
     cache = cache_directory(cache_root, width, height, batch_size, torch.__version__,
                             f'{torch_tensorrt.__version__}-sdk-{tensorrt.__version__}',
                             torch.cuda.get_device_capability())
+    metadata = engine_metadata(unet, width, height, batch_size, torch.__version__, torch.version.cuda,
+                               torch_tensorrt.__version__, tensorrt.__version__,
+                               torch.cuda.get_device_name(), torch.cuda.get_device_capability())
+    key = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()[:24]
+    cache = cache / key
     cache.mkdir(parents=True, exist_ok=True)
-    print(f'>>> Compiling TensorRT UNet: {width} x {height}, batch {batch_size}. First use can take several minutes.', flush=True)
+    print(f'>>> Checking TensorRT profile: {width} x {height}, batch {batch_size}.', flush=True)
     with torch.no_grad():
         expected = graph(*inputs).detach()
+        if reuse_engines:
+            loaded = load_engine_archive(cache, metadata, inputs, expected, graph)
+            if loaded is not None:
+                return TensorRTUNet(loaded, unet, batch_size)
+        print(f'>>> Compiling TensorRT UNet: {width} x {height}, batch {batch_size}. First use can take several minutes.', flush=True)
         # Export standard attention operations: FlashAttention cross-attention
         # lacks converter coverage, and its self-attention converter requires
         # strong typing that triggers a TensorRT 10.15 builder error here.
@@ -123,10 +262,11 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
             enabled_precisions={torch.float16}, optimization_level=0,
             # Decompose Diffusers' baddbmm into supported primitive operations.
             enable_experimental_decompositions=True,
+            use_python_runtime=False,
             require_full_compilation=True, workspace_size=2 * 1024**3,
             # TensorRT 10.15 refit returned NaNs after a real cache hit on
-            # SD-Turbo. Rebuild immutable engines and reuse builder timings;
-            # numerical validation must still pass before either mode is ready.
+            # SD-Turbo. Keep immutable weights in full deployment archives;
+            # the compiler's stripped/refit cache must remain disabled.
             immutable_weights=True,
             cache_built_engines=False, reuse_cached_engines=False,
             timing_cache_path=str(cache / 'timing-cache.bin'),
@@ -138,5 +278,10 @@ def compile_unet(unet, width, height, batch_size, cache_root='engines/torch-tens
         actual = compiled(*inputs)
         torch.testing.assert_close(actual, expected, rtol=0.05, atol=0.05)
         torch.cuda.synchronize()
+        # Check another timestep/input before exporting or reporting readiness.
+        check_inputs = [inputs[0] * 0.5, inputs[1] * 0.5, inputs[2] * 0.5]
+        torch.testing.assert_close(compiled(*check_inputs), graph(*check_inputs), rtol=0.05, atol=0.05)
+        if reuse_engines:
+            save_engine_archive(compiled, cache, metadata, inputs, expected, graph)
     print(f'>>> TensorRT UNet batch {batch_size} compiled and output validation passed ({engine_count} engine(s)).', flush=True)
     return TensorRTUNet(compiled, unet, batch_size)

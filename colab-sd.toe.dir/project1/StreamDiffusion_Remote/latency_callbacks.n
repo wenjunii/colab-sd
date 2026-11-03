@@ -1,0 +1,5 @@
+DAT:text
+tile 0 300 130 90
+flags = parlanguage 0
+dock latency_ws
+end

@@ -15,6 +15,7 @@ import venv
 
 from colab_launcher import BridgeSession
 from colab_setup import CORE_DEPENDENCIES, UPSTREAM_REVISION
+from bridge_protocol import OUTPUT_RESOLUTIONS
 
 PROJECT = Path(__file__).resolve().parent
 DEFAULT_RUNTIME = PROJECT / '.workstation'
@@ -145,7 +146,10 @@ def start(arguments):
                             host=host, port=arguments.port, tunnel=tunnel,
                             advertise_host=arguments.advertise_host or socket.gethostname(),
                             server_script=PROJECT / 'colab_server.py', python_executable=python,
-                            cloudflared=binary, access_token=token, startup_timeout=arguments.startup_timeout)
+                            cloudflared=binary, access_token=token, startup_timeout=arguments.startup_timeout,
+                            output_size=tuple(map(int, arguments.resolution.split('x'))),
+                            allow_tensorrt_resize=arguments.allow_tensorrt_resize,
+                            engine_cache=arguments.engine_cache, reuse_engines=not arguments.no_engine_cache)
     try:
         url = session.start()
         print('\nStreamDiffusion workstation is ready. In TouchDesigner select RTX Workstation.')
@@ -174,6 +178,10 @@ def main(argv=None):
     launch.add_argument('--advertise-host', help='Workstation LAN/VPN IP or DNS name shown in the client URL')
     launch.add_argument('--max-fps', type=float, default=60)
     launch.add_argument('--tensorrt', action='store_true', help='Compile both UNets; workstation GPU validation required')
+    launch.add_argument('--resolution', choices=[f'{w}x{h}' for w, h in OUTPUT_RESOLUTIONS], default='512x512')
+    launch.add_argument('--allow-tensorrt-resize', action='store_true', help='Allow live profile loads/builds; streaming pauses')
+    launch.add_argument('--engine-cache', type=Path, help='Persistent full-engine profile cache directory')
+    launch.add_argument('--no-engine-cache', action='store_true', help='Rebuild immutable engines instead of reusing archives')
     launch.add_argument('--startup-timeout', type=float, default=None)
     arguments = parser.parse_args(argv)
     try:
