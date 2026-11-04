@@ -20,12 +20,19 @@ class BridgeSession:
                  host='0.0.0.0', port=8000, tunnel=True, advertise_host=None,
                  server_script='server.py', python_executable=None, cloudflared=None, access_token=None,
                  output_size=(512, 512), allow_tensorrt_resize=False, engine_cache=None, reuse_engines=True,
-                 tunnel_protocol='auto', backend='sd-turbo'):
+                 tunnel_protocol='auto', backend='sd-turbo', server_environment=None):
         if backend not in ('sd-turbo', 'waypoint', 'krea'):
             raise ValueError('Backend must be sd-turbo, waypoint, or krea')
         if backend != 'sd-turbo' and tensorrt:
             raise ValueError('This backend uses its own runtime, not the SD-Turbo TensorRT engines')
         self.backend = backend
+        # Per-launch options belong to the child, not the caller's process.
+        # None removes an inherited variable (e.g. a legacy model-cache alias).
+        self.server_environment = dict(server_environment or {})
+        if any(not isinstance(key, str) or not key or '=' in key or '\0' in key
+               or (value is not None and (not isinstance(value, str) or '\0' in value))
+               for key, value in self.server_environment.items()):
+            raise ValueError('Server environment must map valid names to strings or None')
         if not math.isfinite(float(max_fps)) or not 1 <= float(max_fps) <= 120:
             raise ValueError('Maximum FPS must be between 1 and 120')
         self.root = Path(root or Path.cwd()).resolve()
@@ -138,6 +145,11 @@ class BridgeSession:
             pass
         try:
             environment = os.environ.copy()
+            for key, value in self.server_environment.items():
+                if value is None:
+                    environment.pop(key, None)
+                else:
+                    environment[key] = value
             environment['BRIDGE_BACKEND'] = self.backend
             environment['MAX_STREAM_FPS'] = str(self.max_fps)
             environment['ENABLE_TENSORRT'] = '1' if self.tensorrt else '0'

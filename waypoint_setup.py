@@ -64,7 +64,7 @@ def ensure_environment(environment, label='Waypoint'):
     return python, True
 
 
-def setup(root, prompt_seeds=False):
+def setup(root, prompt_seeds=False, install_tunnel=True):
     if platform.system() not in ('Linux', 'Windows') or platform.machine().lower() not in ('x86_64', 'amd64'):
         raise RuntimeError('This installer supports x86-64 Linux and Windows CUDA hosts')
     root = Path(root).resolve()
@@ -88,6 +88,8 @@ def setup(root, prompt_seeds=False):
                     'assert torch.cuda.get_device_capability()[0] >= 8, "Ampere+ GPU required"; '
                     'print(torch.__version__, torch.cuda.get_device_name(), flush=True)'], check=True)
     marker.write_text(json.dumps(signature, indent=2) + '\n', encoding='utf-8')
+    if not install_tunnel:
+        return python, None  # workstation LAN mode needs no tunnel binary
     binary = root / ('cloudflared.exe' if os.name == 'nt' else 'cloudflared')
     if not binary.exists():
         asset = 'cloudflared-windows-amd64.exe' if os.name == 'nt' else 'cloudflared-linux-amd64'

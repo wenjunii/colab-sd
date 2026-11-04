@@ -447,7 +447,7 @@ def send_control(force=False, strength_override=None, world_reset=False, world_r
     p = parent().par
     mode = str(p.Mode.eval()) if getattr(p, 'Mode', None) else 'txt2img'
     if mode not in parent().fetch('supported_modes', ['txt2img', 'img2img']):
-        p.Status = 'Selected mode needs its matching Colab notebook/server'
+        p.Status = 'Selected mode needs its matching server backend'
         return
     
     def parameter(name, default):
@@ -503,7 +503,7 @@ def send_control(force=False, strength_override=None, world_reset=False, world_r
         source_par = getattr(p, 'Worldseedsource', None)
         source = str(source_par.eval()) if source_par is not None else 'input'
         if source == 'sdturbo' and not parent().fetch('world_prompt_seeding', False):
-            p.Status = 'Enable prompt seeds in the Waypoint notebook setup, then restart its server'
+            p.Status = 'Enable prompt seeds in Waypoint server setup, then restart its server'
             return
         if parent().fetch('world_prompt_seeding', False):
             auto_par, interval_par = getattr(p, 'Worldautoseed', None), getattr(p, 'Worldseedinterval', None)
@@ -933,7 +933,7 @@ def onPulse(par):
 def send_world_seed():
     if (parent().fetch('server_backend', '') != 'waypoint'
             or not parent().fetch('server_ready', False)):
-        parent().par.Status = 'Connect the Waypoint notebook before seeding a world'
+        parent().par.Status = 'Connect a Waypoint server before seeding a world'
         return
     cam, ws = op('null_cam'), op('websocket1')
     if not cam or not ws or not ws.par.active.eval():

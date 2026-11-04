@@ -10,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import urllib.request
 import venv
 
@@ -19,6 +20,7 @@ from bridge_protocol import OUTPUT_RESOLUTIONS
 
 PROJECT = Path(__file__).resolve().parent
 DEFAULT_RUNTIME = PROJECT / '.workstation'
+DEFAULT_WAYPOINT_RUNTIME = PROJECT / '.workstation-waypoint'
 TORCH_VERSION = '2.13.0'
 
 
@@ -42,10 +44,13 @@ def check_platform():
         raise RuntimeError('Run this installer with Python 3.11 (Windows: py -3.11 workstation.py setup).')
 
 
-def gpu_check(python, root):
+def gpu_check(python, root, backend='sd-turbo'):
+    capability = ('assert torch.cuda.get_device_capability()[0] >= 8, "Waypoint requires Ampere+ CUDA"; '
+                  if backend == 'waypoint' else '')
     subprocess.run([str(python), '-c',
                     'import torch; '
                     'assert torch.cuda.is_available(), "CUDA unavailable: check NVIDIA driver and the selected PyTorch CUDA wheel"; '
+                    + capability +
                     'print("GPU:", torch.cuda.get_device_name(0), "| Torch:", torch.__version__, "| CUDA:", torch.version.cuda)'],
                    cwd=root, check=True)
 
@@ -61,8 +66,10 @@ def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION):
         raise RuntimeError('Runtime folder is not empty or managed by this installer. Choose a new --runtime folder.')
     if not marker.exists():
         marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION}) + '\n', encoding='utf-8')
-    elif json.loads(marker.read_text(encoding='utf-8')).get('managed_by') != 'colab-sd':
-        raise RuntimeError('Runtime folder belongs to another application.')
+    else:
+        configuration = json.loads(marker.read_text(encoding='utf-8'))
+        if configuration.get('managed_by') != 'colab-sd' or configuration.get('backend', 'sd-turbo') != 'sd-turbo':
+            raise RuntimeError('Runtime folder belongs to another application or backend; choose a separate --runtime.')
     marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION, 'ready': False}) + '\n',
                       encoding='utf-8')
     if shutil.which('git') is None:
@@ -93,6 +100,66 @@ def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION):
     marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION, 'ready': True,
                                  'torch': torch_version, 'cuda': cuda}) + '\n', encoding='utf-8')
     print('Workstation setup complete. Run workstation.py start to load the models and stream.')
+
+
+def waypoint_model_cache(runtime, selected=None):
+    cache = Path(selected or Path(runtime) / 'models').expanduser().resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    # Verify write access without modifying cached models or auth locations.
+    with tempfile.TemporaryDirectory(prefix='.bridge-write-check-', dir=cache) as directory:
+        probe = Path(directory).resolve()
+        if probe.parent != cache:
+            raise RuntimeError('Model cache probe resolved outside its cache folder')
+        (probe / 'probe').write_bytes(b'cache check')
+    return cache
+
+
+def setup_waypoint(runtime, prompt_seeds=False, model_cache=None):
+    """Reuse the pinned Colab adapter/runtime in a separate workstation venv."""
+    check_platform()
+    runtime = Path(runtime).resolve()
+    marker = runtime / 'workstation.json'
+    if marker.exists():
+        previous = json.loads(marker.read_text(encoding='utf-8'))
+        if previous.get('managed_by') != 'colab-sd' or previous.get('backend') != 'waypoint':
+            raise RuntimeError('Runtime folder belongs to another application or backend; choose a separate --runtime.')
+    elif runtime.exists() and any(runtime.iterdir()):
+        raise RuntimeError('Runtime folder is not empty or managed by this installer. Choose a new --runtime folder.')
+    else:
+        previous = {}
+    if shutil.which('git') is None:
+        raise RuntimeError('Install Git and reopen your terminal before running workstation setup.')
+    from waypoint_setup import setup as install, RUNTIME_REVISION
+    runtime.mkdir(parents=True, exist_ok=True)
+    cache = Path(model_cache or previous.get('model_cache') or runtime / 'models').expanduser().resolve()
+    configuration = {'managed_by': 'colab-sd', 'backend': 'waypoint', 'revision': RUNTIME_REVISION,
+                     'ready': False, 'prompt_seeds': bool(prompt_seeds), 'model_cache': str(cache)}
+    marker.write_text(json.dumps(configuration, indent=2) + '\n', encoding='utf-8')
+    waypoint_model_cache(runtime, cache)
+    # Do not install the legacy StreamDiffusion environment or download a tunnel
+    # for LAN users. Cloudflare is downloaded on demand at launch.
+    install(runtime, prompt_seeds=prompt_seeds, install_tunnel=False)
+    configuration['ready'] = True
+    marker.write_text(json.dumps(configuration, indent=2) + '\n', encoding='utf-8')
+    print('Waypoint workstation setup complete. Model cache:', cache)
+    print('Run workstation.py start --backend waypoint to load the models and stream.')
+
+
+def waypoint_environment(runtime, configuration, arguments):
+    from waypoint_setup import DEPENDENCIES, SEED_DEPENDENCIES, RUNTIME_REVISION
+    if configuration.get('revision') != RUNTIME_REVISION or not isinstance(configuration.get('prompt_seeds'), bool):
+        raise RuntimeError('Waypoint setup is outdated. Run workstation.py setup --backend waypoint again.')
+    installed = runtime / 'installed.json'
+    expected = [*DEPENDENCIES, *(SEED_DEPENDENCIES if configuration['prompt_seeds'] else ())]
+    if not installed.exists() or json.loads(installed.read_text(encoding='utf-8')).get('dependencies') != expected:
+        raise RuntimeError('Waypoint dependencies changed. Run workstation.py setup --backend waypoint again.')
+    cache = waypoint_model_cache(runtime, arguments.model_cache or configuration.get('model_cache'))
+    return {'WAYPOINT_QUANT': arguments.quantization or 'intw8a8',
+            'WAYPOINT_COMPILE_PROFILE': arguments.compile_profile or 'fast',
+            'WAYPOINT_PROMPT_SEEDS': '1' if configuration['prompt_seeds'] else '0',
+            'HF_HUB_CACHE': str(cache), 'HUGGINGFACE_HUB_CACHE': str(cache), 'TRANSFORMERS_CACHE': None,
+            'TORCHINDUCTOR_CACHE_DIR': str(runtime / 'inductor-cache'),
+            'TRITON_CACHE_DIR': str(runtime / 'triton-cache')}
 
 
 def pairing_token(runtime):
@@ -129,15 +196,32 @@ def cloudflared_binary(runtime):
 
 def start(arguments):
     runtime = arguments.runtime.resolve()
-    python, upstream = runtime_python(runtime), runtime / 'StreamDiffusion'
+    backend = arguments.backend
+    if backend == 'waypoint':
+        if (arguments.tensorrt or arguments.allow_tensorrt_resize or arguments.engine_cache
+                or arguments.no_engine_cache):
+            raise ValueError('Waypoint uses INT8/BF16 and TorchInductor; TensorRT options apply only to SD-Turbo.')
+        if arguments.resolution not in (None, '1280x720'):
+            raise ValueError('Waypoint uses fixed native 1280x720 output.')
+    elif arguments.quantization or arguments.compile_profile or arguments.model_cache or arguments.resolution == '1280x720':
+        raise ValueError('Waypoint options require --backend waypoint.')
+    python = runtime_python(runtime)
+    upstream = runtime if backend == 'waypoint' else runtime / 'StreamDiffusion'
     marker = runtime / 'workstation.json'
-    if not marker.exists() or not python.exists() or not (upstream / 'utils/wrapper.py').exists():
+    if (not marker.exists() or not python.exists()
+            or (backend == 'sd-turbo' and not (upstream / 'utils/wrapper.py').exists())):
         raise RuntimeError('Run workstation.py setup first, using the same --runtime folder.')
     configuration = json.loads(marker.read_text(encoding='utf-8'))
-    if (configuration.get('managed_by') != 'colab-sd' or configuration.get('revision') != UPSTREAM_REVISION
+    if (configuration.get('managed_by') != 'colab-sd' or configuration.get('backend', 'sd-turbo') != backend
             or configuration.get('ready') is not True):
         raise RuntimeError('Workstation setup is outdated or unmanaged. Run workstation.py setup again.')
-    gpu_check(python, upstream)
+    if backend == 'waypoint':
+        environment = waypoint_environment(runtime, configuration, arguments)
+    else:
+        if configuration.get('revision') != UPSTREAM_REVISION:
+            raise RuntimeError('Workstation setup is outdated. Run workstation.py setup again.')
+        environment = {}
+    gpu_check(python, upstream, backend=backend)
     token = pairing_token(runtime)
     tunnel = arguments.transport == 'cloudflare'
     binary = cloudflared_binary(runtime) if tunnel else None
@@ -147,17 +231,22 @@ def start(arguments):
                             advertise_host=arguments.advertise_host or socket.gethostname(),
                             server_script=PROJECT / 'colab_server.py', python_executable=python,
                             cloudflared=binary, access_token=token, startup_timeout=arguments.startup_timeout,
-                            output_size=tuple(map(int, arguments.resolution.split('x'))),
+                            output_size=(1280, 720) if backend == 'waypoint' else
+                                        tuple(map(int, (arguments.resolution or '512x512').split('x'))),
                             allow_tensorrt_resize=arguments.allow_tensorrt_resize,
                             engine_cache=arguments.engine_cache, reuse_engines=not arguments.no_engine_cache,
-                            tunnel_protocol=arguments.tunnel_protocol)
+                            tunnel_protocol=arguments.tunnel_protocol, backend=backend, server_environment=environment)
     try:
         url = session.start()
-        print('\nStreamDiffusion workstation is ready. In TouchDesigner select RTX Workstation.')
+        print(f'\n{backend} workstation is ready. In TouchDesigner select RTX Workstation.')
         print('Server WebSocket URL:', url)
         print('Workstation Access Token:', token)
         if not tunnel:
             print('Use the workstation LAN/VPN IP if its hostname does not resolve; --advertise-host sets the printed address.')
+        if backend == 'waypoint':
+            print('World page: seed an input image' + (' or choose SD-Turbo (Prompt A/B).' if configuration['prompt_seeds'] else '.'))
+            print('Prompt seeds:', configuration['prompt_seeds'], '| Model cache:', environment['HF_HUB_CACHE'])
+            print('Native 1280 x 720 |', environment['WAYPOINT_QUANT'], '| Compiler:', environment['WAYPOINT_COMPILE_PROFILE'])
         print('Ctrl+C stops this server and its tunnel. Logs:', upstream / 'bridge_logs', flush=True)
         session.wait()
     finally:
@@ -167,30 +256,50 @@ def start(arguments):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    install = commands.add_parser('setup', help='Create a dedicated runtime and install CUDA StreamDiffusion')
-    install.add_argument('--runtime', type=Path, default=DEFAULT_RUNTIME)
-    install.add_argument('--cuda', default='cu130', help='Official PyTorch wheel index tag (default: cu130)')
-    install.add_argument('--torch-version', default=TORCH_VERSION)
+    install = commands.add_parser('setup', help='Install a separate SD-Turbo or Waypoint CUDA runtime')
+    install.add_argument('--backend', choices=('sd-turbo', 'waypoint'), default='sd-turbo')
+    install.add_argument('--runtime', type=Path, help='Default: .workstation for SD-Turbo; .workstation-waypoint for Waypoint')
+    install.add_argument('--cuda', help='SD-Turbo CUDA wheel tag (default: cu130); Waypoint pins cu130')
+    install.add_argument('--torch-version', help=f'SD-Turbo Torch version (default: {TORCH_VERSION}); Waypoint pins 2.11.0')
+    install.add_argument('--prompt-seeds', action='store_true', help='Waypoint: install and enable optional SD-Turbo prompt seeds')
+    install.add_argument('--model-cache', type=Path, help='Waypoint model cache (default: runtime/models); auth stays outside')
     launch = commands.add_parser('start', help='Run generation with LAN/VPN or Cloudflare transport')
-    launch.add_argument('--runtime', type=Path, default=DEFAULT_RUNTIME)
+    launch.add_argument('--backend', choices=('sd-turbo', 'waypoint'), default='sd-turbo')
+    launch.add_argument('--runtime', type=Path, help='Use the matching setup runtime folder')
+    launch.add_argument('--quantization', choices=('intw8a8', 'bf16'), help='Waypoint only (default: intw8a8)')
+    launch.add_argument('--compile-profile', choices=('fast', 'max-autotune'), help='Waypoint only (default: fast)')
+    launch.add_argument('--model-cache', type=Path, help='Waypoint cache override for this launch')
     launch.add_argument('--transport', choices=('lan', 'cloudflare'), default='lan')
     launch.add_argument('--tunnel-protocol', choices=TUNNEL_PROTOCOLS, default='http2',
                         help='Cloudflare transport (default: http2, matching Colab); compare auto/quic for your route')
     launch.add_argument('--bind', help='Listening address (default: all interfaces for LAN, loopback for Cloudflare)')
     launch.add_argument('--port', type=int, default=8000)
     launch.add_argument('--advertise-host', help='Workstation LAN/VPN IP or DNS name shown in the client URL')
-    launch.add_argument('--max-fps', type=float, default=60)
+    launch.add_argument('--max-fps', type=float, help='Default: 60 for SD-Turbo; 20 for Waypoint')
     launch.add_argument('--tensorrt', action='store_true', help='Compile both UNets; workstation GPU validation required')
-    launch.add_argument('--resolution', choices=[f'{w}x{h}' for w, h in OUTPUT_RESOLUTIONS], default='512x512')
+    launch.add_argument('--resolution', choices=[*[f'{w}x{h}' for w, h in OUTPUT_RESOLUTIONS], '1280x720'],
+                        help='Default: 512x512 for SD-Turbo; fixed 1280x720 for Waypoint')
     launch.add_argument('--allow-tensorrt-resize', action='store_true', help='Allow live profile loads/builds; streaming pauses')
     launch.add_argument('--engine-cache', type=Path, help='Persistent full-engine profile cache directory')
     launch.add_argument('--no-engine-cache', action='store_true', help='Rebuild immutable engines instead of reusing archives')
     launch.add_argument('--startup-timeout', type=float, default=None)
     arguments = parser.parse_args(argv)
+    arguments.runtime = arguments.runtime or (DEFAULT_WAYPOINT_RUNTIME if arguments.backend == 'waypoint' else DEFAULT_RUNTIME)
     try:
         if arguments.command == 'setup':
-            setup(arguments.runtime, arguments.cuda, arguments.torch_version)
+            if arguments.backend == 'waypoint':
+                if arguments.cuda not in (None, 'cu130') or arguments.torch_version not in (None, '2.11.0'):
+                    raise ValueError('The pinned Waypoint runtime requires Torch 2.11.0 / cu130; SD-Turbo uses a separate environment.')
+                setup_waypoint(arguments.runtime, arguments.prompt_seeds, arguments.model_cache)
+            else:
+                if arguments.prompt_seeds or arguments.model_cache:
+                    raise ValueError('--prompt-seeds and --model-cache require --backend waypoint.')
+                setup(arguments.runtime, arguments.cuda or 'cu130', arguments.torch_version or TORCH_VERSION)
         else:
+            if arguments.max_fps is None:
+                arguments.max_fps = 20 if arguments.backend == 'waypoint' else 60
+            if arguments.startup_timeout is None and arguments.backend == 'waypoint':
+                arguments.startup_timeout = 1800
             start(arguments)
         return 0
     except KeyboardInterrupt:

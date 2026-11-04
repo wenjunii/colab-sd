@@ -245,6 +245,45 @@ Keep the server terminal running (locally, through SSH, or in your workstation r
 
 Native **PyTorch FP16** is the default. `start --tensorrt --resolution 768x576` selects the startup TensorRT profile, with strict failure instead of silent fallback. `--engine-cache PATH` selects persistent archive storage; the default is inside the runtime checkout. `--no-engine-cache` disables archive reuse, and `--allow-tensorrt-resize` permits live profile changes with a loading pause. TensorRT compatibility and image quality must be checked on each workstation GPU/software combination. The hardware checks below cover specific software versions; start with FP16 when configuring a new workstation.
 
+#### Waypoint on the workstation (Windows / Linux, experimental)
+
+The workstation launcher also exposes the **same Waypoint backend as Colab**, including input-image seeding, movement/camera controls, Pause/Reset, progress reporting, the fast compiler/GemLite policy, and optional SD-Turbo prompt seeds with adjustable auto-reseeding. It uses the existing TouchDesigner World page. No Colab session is needed for workstation streaming.
+
+Windows PowerShell:
+
+```powershell
+py -3.11 workstation.py setup --backend waypoint
+py -3.11 workstation.py start --backend waypoint --advertise-host 192.168.1.50
+```
+
+Linux:
+
+```bash
+python3.11 workstation.py setup --backend waypoint
+python3.11 workstation.py start --backend waypoint --advertise-host 192.168.1.50
+```
+
+In TouchDesigner select **Server Location = RTX Workstation**, paste the printed URL **and pairing token**, and enable Connect. The handshake selects **World Model (Waypoint)** and fixed **1280 × 720** output. On **World**, pulse **Seed World from Input**, then use the same movement/Pause/Reset controls described in the Colab section. Keep the workstation server terminal and local TouchDesigner running.
+
+Setup uses **`.workstation-waypoint/venv`**, separate from SD-Turbo's `.workstation` environment. The pinned WorldEngine runtime requires **Torch 2.11.0 / CUDA 13.0**; it does not replace SD-Turbo's Torch/TensorRT stack or install the legacy StreamDiffusion wrapper. Upstream declares Linux Triton and native Windows `triton-windows` dependencies in its [pinned package configuration](https://github.com/Overworldai/world_engine/blob/68b316390d576dd9f671f552803526bbf8eb2ed5/pyproject.toml). Both paths require a compatible NVIDIA driver and Ampere-or-newer CUDA GPU. **Native Waypoint GPU inference on Windows/Linux workstations remains unverified here**; earlier SD-Turbo workstation tests and A100 Colab measurements do not establish its performance or combined-mode memory use.
+
+Models persist locally at **`.workstation-waypoint/models`**. To choose another disk, pass `setup --backend waypoint --model-cache PATH`; setup remembers the path. A `start --model-cache PATH` override affects only that launch. Hugging Face auth stays in its existing private location, outside this model cache. TorchInductor and Triton caches persist under `.workstation-waypoint/inductor-cache` and `triton-cache`. This reuses compatible local compiled kernels but does not promise a compile-free launch after GPU, driver, package or model changes. Old models/caches and both backend environments are preserved.
+
+Defaults match Colab: **INT8 (`intw8a8`)**, **fast** compiler profile, **20 maximum delivered FPS**, and a 1,800-second model-startup timeout. These are settings, not measured workstation FPS. Use `start --backend waypoint --quantization bf16 --compile-profile max-autotune` for comparisons; max-autotune can take much longer to prepare. Waypoint uses TorchInductor, so TensorRT flags and SD-Turbo resolution choices are rejected for this backend.
+
+For an internet connection, add `--transport cloudflare` to start. HTTP/2 remains the default; `--tunnel-protocol auto` / `quic`, bind/port overrides, pairing, the independent latency probe and bounded frame ACKs work as in SD-Turbo. LAN setup skips the tunnel download; Cloudflare is downloaded only when requested at launch. Logs are in **`.workstation-waypoint/bridge_logs`**. Use `--runtime PATH` on both setup/start for another dedicated installation; the launcher refuses to reuse a folder managed by a different backend.
+
+To enable the existing prompt-seed workflow:
+
+```powershell
+py -3.11 workstation.py setup --backend waypoint --prompt-seeds
+py -3.11 workstation.py start --backend waypoint --advertise-host 192.168.1.50
+```
+
+On Linux replace `py -3.11` with `python3.11`. In TD choose **World Seed Source = SD-Turbo (Prompt A/B)**. **Auto Reseed** defaults On at **5 seconds**, adjustable from 1–3,600 seconds; Off keeps the scene until Generate Seed from Prompt / Submit Prompts. Batch-boundary/credit gating, pause behavior, manual reseeding, scene cuts and failure handling are identical to Colab because both launch the same adapter. Rerun setup without `--prompt-seeds` to disable the optional generator while preserving cached weights.
+
+Commercial-use terms remain component-specific: Waypoint weights declare Apache-2.0, WorldEngine is GPL-3.0 and TAEHV weights are MIT. Optional **SD-Turbo** is a separate model: its [model card](https://huggingface.co/stabilityai/sd-turbo) directs commercial users to [Stability AI's licensing terms](https://stability.ai/license). The bridge's MIT license does not grant additional model rights. Input-image Waypoint mode does not load SD-Turbo.
+
 Workstation mode currently uses the same legacy StreamDiffusion model dependency pins as Colab. Its separate environment and access token do not patch those dependencies; the remaining migration is described in [SECURITY.md](SECURITY.md).
 
 ### 2. Connect TouchDesigner
@@ -429,7 +468,7 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `bridge_protocol.py` | Shared output presets, control validation, and input frame assembly |
 | `colab_server.py` | Model loading, recovery, generation, health, and WebSocket streaming |
 | `colab_setup.py` / `colab_launcher.py` | Colab environment setup and owned server/tunnel lifecycle |
-| `workstation.py` | Isolated Windows/Linux CUDA setup, pairing token, and LAN/VPN/Cloudflare launch |
+| `workstation.py` | Separate SD-Turbo / Waypoint Windows/Linux CUDA environments, persistent caches, pairing and LAN/VPN/Cloudflare launch |
 | `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, validated immutable deployment archives, and per-profile builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
 | `generate_notebook.py` / `generate_waypoint_notebook.py` / `generate_krea_notebook.py` | Self-contained SD-Turbo, Waypoint and Krea notebooks and freshness checking |

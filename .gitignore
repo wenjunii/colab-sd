@@ -15,6 +15,7 @@ engines/
 captures/
 bridge_logs/
 .workstation/
+.workstation-waypoint/
 **/access-token
 *.tmp
 

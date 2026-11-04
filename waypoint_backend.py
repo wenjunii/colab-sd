@@ -142,7 +142,7 @@ class WaypointBackend:
             'first_batch': 'Generating first world batch; compiling kernels if needed',
             'streaming': 'World frames ready',
             'paused': 'World paused',
-            'error': 'World processing failed; see Colab log, then reset or reseed',
+            'error': 'World processing failed; see server log, then reset or reseed',
         }
         status = labels[phase]
         if self.seed_error:
@@ -164,7 +164,7 @@ class WaypointBackend:
         from huggingface_hub import snapshot_download
         from world_engine import WorldEngine, CtrlInput
         if quant not in ('intw8a8', 'bf16'):
-            raise ValueError('A100 supports intw8a8 or bf16 here; FP8/FP4 are not selected')
+            raise ValueError('Use intw8a8 or bf16 here; FP8/FP4 are not selected')
         engine_type = engine_class_for_profile(WorldEngine, torch, compile_profile)
         if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8:
             raise RuntimeError('Waypoint requires an NVIDIA Ampere-or-newer CUDA GPU')
@@ -206,7 +206,7 @@ class WaypointBackend:
         clean = validate_world_controls(data)
         source = clean.get('world_seed_source', self.seed_source)
         if source == 'sdturbo' and self.seed_generator is None:
-            raise ValueError('Enable SD-Turbo prompt seeds in the Waypoint notebook setup first')
+            raise ValueError('Enable SD-Turbo prompt seeds in Waypoint server setup first')
         source_changed = source != self.seed_source
         interval_changed = clean.get('world_seed_interval', self.seed_interval) != self.seed_interval
         changed = any(clean.get(key, old) != old for key, old in (
