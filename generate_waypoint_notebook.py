@@ -47,8 +47,10 @@ server and tunnel. Drive persists weights, not the running GPU or compiled Tenso
 Waypoint uses TorchInductor, not the SD-Turbo TensorRT cache. First-run compilation is still
 required in a fresh runtime; cross-VM compiled-kernel reuse is not enabled here.
 
-A100 40 GB fit, image quality, startup time and sustained delivered FPS still need live validation.
-The runtime documents INT8 support for Ampere; this notebook does not promise an A100 frame rate.
+Basic native-720p INT8 generation was tested on an A100 40 GB with the fast profile and an
+already-used VM/cache. Fresh-VM startup, long-running world quality, other profiles and sustained
+TouchDesigner FPS still need validation. See the README measurements; this notebook does not
+promise an A100 frame rate.
 
 [Model](https://huggingface.co/Overworld/Waypoint-1.5-1B) ·
 [Runtime and licenses](https://github.com/Overworldai/world_engine) ·

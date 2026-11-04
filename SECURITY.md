@@ -31,7 +31,7 @@ TensorRT deployment archives contain executable model graphs and must come from 
 
 Waypoint currently requires Torch 2.11.0 upstream, plus its quantization/compiler dependencies. The CPU suite uses a different, newer Torch version. Its dependency audit does not cover this optional GPU environment or establish A100 compatibility. The installer runs `pip check` and a CUDA/import preflight; those are dependency/availability checks, not vulnerability or image-quality checks. Some transitive dependencies remain resolved by upstream constraints. Cloudflared uses the official release download, matching the existing launcher setup.
 
-The new world-mode controls, seed uploads, delivery credit handling and reconnect lifecycle have CPU contract tests. A100 40 GB model loading, compilation and generated video still require a live check. The model is image-conditioned; it does not receive the SD-Turbo prompt controls. The existing single-controller and optional token authentication gates also apply to this backend. The Colab notebook defaults to a blank token, as does the SD-Turbo notebook; anyone with its tunnel URL can attempt to connect.
+The new world-mode controls, seed uploads, delivery credit handling and reconnect lifecycle have CPU contract tests. Basic A100 40 GB INT8 generation with the fast profile and an existing VM/cache is recorded in the README; other profiles and long-running operation still need live checks. The model is image-conditioned; it does not receive the SD-Turbo prompt controls. The existing single-controller and optional token authentication gates also apply to this backend. The Colab notebook defaults to a blank token, as does the SD-Turbo notebook; anyone with its tunnel URL can attempt to connect.
 
 ## Workstation access
 
