@@ -39,6 +39,9 @@ The default **fast** compiler profile keeps full-graph compilation but disables 
 autotuning, coordinate-descent tuning, and CUDA-graph capture. **max-autotune** restores the
 upstream policy for throughput comparisons after a successful first-frame test; it can take
 much longer to start. Neither profile changes native resolution or quantization.
+For INT8, fast also resets GemLite's independent tuner to its default after model construction.
+Cold quantization warmup otherwise leaves exhaustive GemLite tuning enabled, even when
+TorchInductor tuning is disabled. Initial quantization warmup and first-use compilation remain.
 The updated TouchDesigner Status and server `/health` report seed preparation and first-batch
 generation separately, with elapsed time. Model-loaded readiness does not mean a frame is ready.
 

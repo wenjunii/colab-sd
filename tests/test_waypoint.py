@@ -90,7 +90,7 @@ class WaypointChecks(unittest.TestCase):
 
     def test_loader_pins_both_models_and_selects_a100_compatible_quantization(self):
         world = SimpleNamespace(WorldEngine=Mock(), CtrlInput=Mock())
-        with patch.dict('sys.modules', {'world_engine': world}), \
+        with patch.dict('sys.modules', {'world_engine': world, 'gemlite': Mock()}), \
                 patch('waypoint_backend.engine_class_for_profile', return_value=world.WorldEngine), \
                 patch('huggingface_hub.snapshot_download', side_effect=['local/model', 'local/vae']) as download, \
                 patch.object(torch.cuda, 'is_available', return_value=True), \
@@ -102,6 +102,36 @@ class WaypointChecks(unittest.TestCase):
             self.assertEqual(world.WorldEngine.call_args.kwargs['model_config_overrides'], {'ae_uri': 'local/vae'})
             with self.assertRaises(ValueError):
                 WaypointBackend.load('fp8w8a8')
+
+    def test_fast_int8_resets_cold_warmup_policy_before_first_inference(self):
+        # Reproduce the upstream cold/warm distinction: only a cold constructor
+        # leaves the separate GemLite autotuner in exhaustive mode.
+        for cold, quant, profile in ((True, 'intw8a8', 'fast'),
+                                     (False, 'intw8a8', 'fast'),
+                                     (True, 'intw8a8', 'max-autotune'),
+                                     (True, 'bf16', 'fast')):
+            with self.subTest(cold=cold, quant=quant, profile=profile):
+                state = {'policy': 'default', 'constructed': False}
+                def construct(*args, **kwargs):
+                    if cold and kwargs['quant'] == 'intw8a8':
+                        state['policy'] = 'max'
+                    state['constructed'] = True
+                    return SimpleNamespace(gen_frame=lambda: state['policy'])
+                def select(value):
+                    self.assertTrue(state['constructed'])
+                    state['policy'] = 'max' if value else 'default'
+                world = SimpleNamespace(WorldEngine=Mock(side_effect=construct), CtrlInput=Mock())
+                gemlite = SimpleNamespace(set_autotune=Mock(side_effect=select))
+                with patch.dict('sys.modules', {'world_engine': world, 'gemlite': gemlite}), \
+                        patch('waypoint_backend.engine_class_for_profile', return_value=world.WorldEngine), \
+                        patch('huggingface_hub.snapshot_download', return_value='local/model'), \
+                        patch.object(torch.cuda, 'is_available', return_value=True), \
+                        patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)):
+                    backend = WaypointBackend.load(quant, profile)
+                expected = 'max' if quant == 'intw8a8' and profile == 'max-autotune' else 'default'
+                self.assertEqual(backend.engine.gen_frame(), expected)
+                self.assertEqual(gemlite.set_autotune.call_count,
+                                 int(quant == 'intw8a8' and profile == 'fast'))
 
     def test_launcher_isolates_backend_and_disallows_sd_tensorrt(self):
         session = colab_launcher.BridgeSession(backend='waypoint')
