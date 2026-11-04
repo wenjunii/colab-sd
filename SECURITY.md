@@ -25,6 +25,14 @@ The remaining GPU migration must update the dependency stack together, verify mo
 
 TensorRT deployment archives contain executable model graphs and must come from your own trusted runtime. Keep Drive/cache folders private; checksums detect accidental corruption, not a malicious replacement of both archive and manifest. The cache validates hardware/software/model metadata and numerical output before use. Stripped/refit engine caching remains disabled.
 
+## Optional Waypoint runtime
+
+`Waypoint_Colab_Server.ipynb` installs `waypoint_setup.py` dependencies in a separate environment, rather than replacing SD-Turbo's compatibility stack or the notebook kernel. The runtime source is pinned to a Git commit. `waypoint_backend.py` downloads only the pinned official model's configuration/safetensors and the pinned official TAEHV checkpoint; no client-selected model code is loaded. The TAEHV runtime reads a trusted PyTorch checkpoint. Keep model cache folders private and do not substitute untrusted checkpoints.
+
+Waypoint currently requires Torch 2.11.0 upstream, plus its quantization/compiler dependencies. The CPU suite uses a different, newer Torch version. Its dependency audit does not cover this optional GPU environment or establish A100 compatibility. The installer runs `pip check` and a CUDA/import preflight; those are dependency/availability checks, not vulnerability or image-quality checks. Some transitive dependencies remain resolved by upstream constraints. Cloudflared uses the official release download, matching the existing launcher setup.
+
+The new world-mode controls, seed uploads, delivery credit handling and reconnect lifecycle have CPU contract tests. A100 40 GB model loading, compilation and generated video still require a live check. The model is image-conditioned; it does not receive the SD-Turbo prompt controls. The existing single-controller and optional token authentication gates also apply to this backend. The Colab notebook defaults to a blank token, as does the SD-Turbo notebook; anyone with its tunnel URL can attempt to connect.
+
 ## Workstation access
 
 `workstation.py setup` creates its own environment rather than modifying system Python. It reuses the same legacy model dependency pins listed above, with a selected CUDA Torch wheel and patched Pillow/filelock/setuptools. The CPU dependency audit does not establish security of this GPU environment.

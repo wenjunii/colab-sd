@@ -1,11 +1,11 @@
 ?
-pages 1 StreamDiffusion
+pages 2 StreamDiffusion World
 772804879 Serverlocation "Server Location" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 colab "Google Colab" workstation "RTX Workstation (Windows / Linux)" 0
 772804868 Serverurl "Server WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
 772804868 Accesstoken "Workstation Access Token" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 2
 772804867 Connect "Connect to Server" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 3
-772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 4
-772804879 Resolution "Output Resolution / Ratio" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 16 256 "256 x 256 (1:1 Fast)" 384 "384 x 384 (1:1)" 512 "512 x 512 (1:1 Default)" 768 "768 x 768 (1:1)" 512x384 "512 x 384 (4:3)" 768x576 "768 x 576 (4:3)" 1024x768 "1024 x 768 (4:3 Max)" 384x512 "384 x 512 (3:4)" 576x768 "576 x 768 (3:4)" 768x1024 "768 x 1024 (3:4 Max)" 512x288 "512 x 288 (16:9)" 768x432 "768 x 432 (16:9)" 1024x576 "1024 x 576 (16:9)" 288x512 "288 x 512 (9:16)" 432x768 "432 x 768 (9:16)" 576x1024 "576 x 1024 (9:16)" 5
+772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 txt2img "Text-to-Video" img2img "Image / Noise to Image" world "World Model (Waypoint)" 4
+772804879 Resolution "Output Resolution / Ratio" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 17 256 "256 x 256 (1:1 Fast)" 384 "384 x 384 (1:1)" 512 "512 x 512 (1:1 Default)" 768 "768 x 768 (1:1)" 512x384 "512 x 384 (4:3)" 768x576 "768 x 576 (4:3)" 1024x768 "1024 x 768 (4:3 Max)" 384x512 "384 x 512 (3:4)" 576x768 "576 x 768 (3:4)" 768x1024 "768 x 1024 (3:4 Max)" 512x288 "512 x 288 (16:9)" 768x432 "768 x 432 (16:9)" 1024x576 "1024 x 576 (16:9)" 288x512 "288 x 512 (9:16)" 432x768 "432 x 768 (9:16)" 576x1024 "576 x 1024 (9:16)" 1280x720 "1280 x 720 (Waypoint only)" 5
 772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 6
 772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 7
 772804868 Prompta "Prompt A" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 8
@@ -38,4 +38,10 @@ pages 1 StreamDiffusion
 772804868 Deliverytime "Video Delivery RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 35
 772804868 Cooktime "Display Cook" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 36
 772804868 Streamwait "Video Buffer Wait" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 37
+772804869 Worldseed "Seed World from Input" 1 1 0 0 1 1 1 2 0 "" "" World 0
+772804869 Worldreset "Reset World (reuse seed)" 1 1 0 0 1 1 1 2 0 "" "" World 1
+772804867 Worldpaused "Pause World" 1 1 0 0 1 1 1 2 0 "" "" World 2
+772804868 Worldbuttons "World Button Codes (comma separated)" 1 1 0 0 1 1 1 2 0 "" "" World 3
+772804865 Worldmousex "Camera X per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 4
+772804865 Worldmousey "Camera Y per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 5
 ?

@@ -35,4 +35,8 @@ Framesize 67109184 "-- KB"
 Deliverytime 67109184 "-- ms"
 Cooktime 67109184 "-- ms"
 Streamwait 67109184 "-- ms"
+Worldpaused 67108928 off
+Worldbuttons 67108928 ""
+Worldmousex 67108928 0
+Worldmousey 67108928 0
 ?

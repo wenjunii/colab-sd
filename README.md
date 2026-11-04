@@ -1,6 +1,6 @@
 # ⚡ StreamDiffusion Remote TouchDesigner Bridge (`colab-sd`)
 
-Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** (Stability AI SD-Turbo) running on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
+Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** (Stability AI SD-Turbo) running on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. An optional, experimental **Waypoint world-model backend** adds image-seeded interactive video on Colab. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
 
 ![TouchDesigner](https://img.shields.io/badge/TouchDesigner-2023%2F2025-orange?logo=derivative)
 ![Model](https://img.shields.io/badge/Model-SD--Turbo%20(up%20to%201024x768)-blue)
@@ -15,10 +15,11 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 * **Two Server Locations:** Choose **Google Colab** or **RTX Workstation (Windows / Linux)**. Each location remembers its own server URL. TouchDesigner uses the local GPU for its TOP network and display; the server runs diffusion.
 * **Optional Google Drive Model Cache:** Retain Colab model downloads in Drive and reuse them in later runtimes. Enable it in the notebook's setup cell.
 * **Workstation Pairing:** A dedicated Python environment, CUDA preflight, configurable listening address/port, persistent access token, and optional Cloudflare tunnel. Text/image generation, prompts, audio, resolution, snapshots, and telemetry use the same protocol for either location.
-* **Two Generation Modes:**
+* **Generation Modes:**
   * **Text-to-Image (`txt2img`):** Continuous visual stream driven by prompts, blend weights, and seeds, using a single-image SD-Turbo batch.
   * **Image-to-Image / Video-to-Video (`img2img`):** Real-time interactive stylization driven by TouchDesigner TOPs (external generators like `Noise TOP`, live webcam feed, or movie files).
-* **Output Resolution / Ratio:** Select from 16 square, landscape, and portrait presets, up to **1024 × 768** or **768 × 1024**. **512 × 512** remains the default. This changes actual server generation dimensions, rather than resizing the received image.
+  * **World Model (`world`, optional Waypoint notebook):** Image-seeded, controller-driven video at native **1280 × 720**. Separate runtime and weights; no Scope dependency. See the setup below.
+* **Output Resolution / Ratio:** SD-Turbo supports 16 square, landscape, and portrait presets, up to **1024 × 768** or **768 × 1024**. **512 × 512** remains the default. Waypoint uses the additional **1280 × 720 (Waypoint only)** entry and locks its native dimensions. This changes actual server generation dimensions, rather than resizing the received image.
 * **Video Quality:** Compress network video independently of generation resolution. Fast targets 48 KB/frame, Balanced 64 KB, and Detail retains the larger resolution-based budget. Changing this control takes effect without a model or TensorRT rebuild.
 * **Dual-Prompt Latent Morphing:** Crossfade between **Prompt A** and **Prompt B** using **Prompt Blend** ($0.0 \dots 1.0$). A bounded embedding cache avoids re-running CLIP for blend, seed, and repeated control updates. Strength schedule changes still require preparation.
 * **Negative Prompt Control:** Retained for compatibility and snapshot metadata. SD-Turbo runs without classifier-free guidance and does not apply negative conditioning; see the [model card](https://huggingface.co/stabilityai/sd-turbo).
@@ -41,6 +42,29 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 * **Standalone Drag-and-Drop Component (`.tox`):** Single self-contained `StreamDiffusion_Remote.tox` ready to drop into ANY TouchDesigner project.
 
 ---
+
+## Waypoint on Colab A100 40 GB (experimental)
+
+[Open the Waypoint notebook in Colab](https://colab.research.google.com/github/wenjunii/colab-sd/blob/main/Waypoint_Colab_Server.ipynb).
+Use a fresh A100 GPU runtime and run its three code cells in order. This is the first open-source world-model integration in this project; the other video/world models discussed are not installed by this notebook. **Scope is not a dependency.**
+
+The [Waypoint-1.5-1B model](https://huggingface.co/Overworld/Waypoint-1.5-1B) is Apache-2.0, its [inference library](https://github.com/Overworldai/world_engine) is GPL-3.0, and the [TAEHV weights](https://huggingface.co/Overworld-Models/taehv1_5) are MIT. These upstream licenses apply to their respective components; this repository's license does not replace them. The bridge calls the separately installed library's public API and does not bundle its implementation or weights.
+
+The runtime documents INT8 support for Ampere GPUs. The notebook defaults to **`intw8a8`** for A100 and offers **`bf16`** for comparison. FP8/FP4 are not selected for A100. **A100 40 GB memory fit, visual output, first-run compilation, and sustained FPS have not yet been validated live.** CPU contract tests do not establish GPU performance. Official RTX results are not Colab benchmarks.
+
+1. In Step 2, optionally enable **USE_GOOGLE_DRIVE**. Pinned model and VAE files use `MyDrive/StreamDiffusion/waypoint-models` by default. Authentication tokens stay outside this model cache. Packages live in `/content/colab-sd-waypoint/venv`; the SD-Turbo environment and notebook kernel packages are not replaced.
+2. Run Step 3 and paste its WebSocket URL into the **updated** TouchDesigner project/component. Enable **Connect**. The handshake selects **World Model (Waypoint)** and **1280 × 720 (Waypoint only)** automatically.
+3. Choose an **Input Source** containing a scene image, such as an external Movie File In TOP connected to the component. On the **World** page, pulse **Seed World from Input**. The image is center-cropped to 16:9 and resized to native 720p. First generation compiles kernels and may take minutes. An unsolicited video upload does not replace the world.
+4. Set **World Button Codes** to comma-separated Owl-Control codes. The [official demo](https://huggingface.co/spaces/Overworld/waypoint-1-small/blob/main/app.py) maps W/A/S/D to `87`, `65`, `83`, `68`; for example `87,65` holds forward and left. Empty the field to release all buttons. **Camera X/Y per Step** hold normalized motion from −1 to 1, sampled once per four-frame step; return them to zero to stop camera motion. These parameters can also be driven by CHOPs.
+5. **Pause World** stops generation. **Reset World** clears history and reuses the last uploaded seed with the current Seed parameter; it does not reload model weights. Changing Seed alone affects the next reset. Reseeding also resets the world. A reconnect clears pending output and releases the previous controller's held controls before adopting the new client's settings; world history remains until reset/reseed.
+
+This checkpoint has **no text conditioning** (`prompt_conditioning: null` in its pinned configuration). Prompt A/B, negative prompt, blend, denoise strength, and audio reactivity apply to SD-Turbo. World controls are sent separately. Switching between SD-Turbo and Waypoint requires starting the matching notebook/server and reconnecting; the server does not keep both models loaded.
+
+Waypoint returns **four native 1280 × 720 frames per model step**. GPU Inference displays the whole batch duration. The server holds at most one four-frame output batch and waits for delivery credits before generating more. Start with **Fast** video quality, **Video Buffer = 3**, and the default HTTP/2 tunnel. Colab routing can still limit delivery. The SD-Turbo resolution limit remains 1024 × 768 / 768 × 1024; 720p is a separate native world-model size.
+
+Drive reuses downloaded weights across sessions. Waypoint uses TorchInductor, **not the SD-Turbo TensorRT cache**. Its compilation cache stays on the current VM; cross-VM kernel-cache reuse is not enabled. Keep TouchDesigner and the Colab launch cell running. Interrupting that cell stops its own server and tunnel. Do not run two GPU servers simultaneously on the same Colab GPU.
+
+The notebook pins the runtime source, model revision, and VAE revision. Its modern dependency stack is isolated from legacy SD-Turbo packages, but it has not received a complete GPU-environment vulnerability audit. See [SECURITY.md](SECURITY.md).
 
 ## 🏗️ Architecture
 
@@ -209,7 +233,7 @@ For a first connection, keep 512 × 512 or choose a smaller output. After frames
 
 ## 🎛️ TouchDesigner Component Parameters
 
-The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion** parameter page:
+The `StreamDiffusion_Remote` COMP exposes connection/generation controls on **StreamDiffusion** and Waypoint controls on **World**:
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -217,8 +241,8 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 | **Server WebSocket URL** | String | Empty | Server LAN/VPN `ws://` or Cloudflare `wss://` endpoint, including `/ws/stream`. |
 | **Workstation Access Token** | String | Empty | Pairing token printed by the workstation launcher; blank for Colab. |
 | **Connect to Server** | Toggle | `Off` | Connects or disconnects the WebSocket stream. |
-| **Generation Mode** | Menu | `Text-to-Video` | `txt2img` (continuous AI synthesis) or `img2img` (audio/visual stylization). |
-| **Output Resolution / Ratio** | Menu | `512 × 512` | 16 presets for 1:1, 4:3, 3:4, 16:9, and 9:16, up to 1024 × 768 or 768 × 1024. Adopts the server's startup size; TensorRT locks it by default. |
+| **Generation Mode** | Menu | `Text-to-Video` | `txt2img` (continuous SD-Turbo synthesis), `img2img` (stylization), or `world` (separate Waypoint server). |
+| **Output Resolution / Ratio** | Menu | `512 × 512` | 16 SD-Turbo presets up to 1024 × 768 / 768 × 1024, plus native 1280 × 720 for Waypoint. Adopts startup size; TensorRT and Waypoint lock it by default. |
 | **Input Source** | Menu | `External Input` | `External Input (in1)` (wired cable), `Webcam (cam_in)`, or `Internal Noise`. |
 | **Display Mode** | Menu | `AI Output Only` | `ai` (AI output), `sidebyside` (Input \| Output), `wipe` (50/50 split), `input` (raw input). |
 | **Prompt A** | String | `cinematic cyberpunk...` | Primary text prompt steering diffusion synthesis. |
@@ -238,7 +262,7 @@ The `StreamDiffusion_Remote` COMP exposes all controls on the **StreamDiffusion*
 | **Status** | String (Display) | `Disconnected` | Live connection status and streaming FPS. |
 | **Acceleration Engine** | String (Display) | `--` | `PyTorch (FP16)` or `TensorRT (UNet)` for the current mode. Requested TensorRT shows Preparing/Unavailable during loading/failure. TinyVAE remains in PyTorch. |
 | **Effective FPS** | String (Display) | `0.0 FPS` | Measured video delivery rate received from Colab. |
-| **GPU Inference** | String (Display) | `-- ms` | Server-side GPU forward pass latency per frame. |
+| **GPU Inference** | String (Display) | `-- ms` | SD-Turbo forward pass per frame; Waypoint duration per four-frame model batch. |
 | **Network Probe RTT** | String (Display) | `-- ms` | Ping/pong on a separate authenticated WebSocket every two seconds; avoids the video connection's queue. Includes routing, TLS, and application scheduling; not ICMP ping. |
 | **Stream Control RTT** | String (Display) | `-- ms` | Ping/pong on the video WebSocket, including any queued video traffic. |
 | **Video Buffer (frames)** | Menu | `3 (balanced)` | Maximum unacknowledged output frames: 1, 2, 3, or 6. Lower values reduce backlog; high network RTT can then limit FPS. |
@@ -329,7 +353,7 @@ GPU integration verified on 2026-10-31 at 512 × 512 with an A100, Python 3.13.1
 
 Windows workstation GPU integration verified on 2026-11-02 with an RTX 3080 Ti Laptop GPU (16 GB), NVIDIA driver 617.42, Python 3.11, Torch 2.13.0+cu130, and TorchVision 0.28.0+cu130. Real launcher checks passed over both direct loopback WebSockets and a public TLS Cloudflare tunnel, including incorrect-token rejection, authenticated text/image generation, prompt blending, denoise strengths 0.2/0.9, and resizing from 512 × 512 to 384 × 384. JPEG dimensions and spatial image variation were checked after buffer warmup. Linux GPU inference needs separate hardware validation. These checks do not establish end-to-end TouchDesigner FPS or test a second physical LAN client.
 
-Full-weight TensorRT archive reuse verified on 2026-11-03 on the same Windows RTX GPU with Python 3.11.9, Torch 2.11.0+cu130, Torch-TensorRT 2.11.0+cu130, and TensorRT 10.15.1.29. At 384 × 384, both modes passed native numerical comparison and generated non-flat JPEGs across strength/mode changes. A fresh process with the compiler disabled loaded both saved archives successfully: initial build/startup took 319 seconds, versus 55 seconds for reuse on local disk. These are hardware test measurements, not Colab/Drive startup guarantees. Mounted Drive transfer and reuse across separate Colab VMs still need a live Colab check. The CPU suite now includes 98 checks for bounded frame credits, independent probes, startup profiles, locked resize, archive rejection, slow frame assembly, video compression, and display acknowledgements.
+Full-weight TensorRT archive reuse verified on 2026-11-03 on the same Windows RTX GPU with Python 3.11.9, Torch 2.11.0+cu130, Torch-TensorRT 2.11.0+cu130, and TensorRT 10.15.1.29. At 384 × 384, both modes passed native numerical comparison and generated non-flat JPEGs across strength/mode changes. A fresh process with the compiler disabled loaded both saved archives successfully: initial build/startup took 319 seconds, versus 55 seconds for reuse on local disk. These are hardware test measurements, not Colab/Drive startup guarantees. Mounted Drive transfer and reuse across separate Colab VMs still need a live Colab check. The CPU suite now includes 109 checks for bounded frame credits, independent probes, startup profiles, locked resize, archive rejection, slow frame assembly, video compression, and display acknowledgements.
 
 Full-resolution video delivery verified on 2026-11-03 at 1024 × 768 on the Windows RTX GPU using native FP16 / Torch 2.11.0+cu130. Both modes and all three video-quality profiles passed authenticated loopback and public Cloudflare checks, including JPEG dimensions, spatial variation, live compression changes, and delivery telemetry. Text frame samples were about 126 KB in Detail, 53 KB in Balanced, and 31 KB in Fast. These are sample payload measurements, not guaranteed sizes or FPS on another connection; lower JPEG quality preserves dimensions but can soften image detail. This transport test does not establish TouchDesigner display performance or the user's A100/Colab route.
 
@@ -360,7 +384,8 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `workstation.py` | Isolated Windows/Linux CUDA setup, pairing token, and LAN/VPN/Cloudflare launch |
 | `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, validated immutable deployment archives, and per-profile builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
-| `generate_notebook.py` | Self-contained notebook generation and freshness checking |
+| `generate_notebook.py` / `generate_waypoint_notebook.py` | Self-contained SD-Turbo and Waypoint notebook generation and freshness checking |
+| `waypoint_backend.py` / `waypoint_setup.py` | Optional native-720p world-model adapter, bounded four-frame queue, pinned models, and isolated GPU environment |
 
 ### Shared local TouchDesigner resources
 
