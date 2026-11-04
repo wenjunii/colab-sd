@@ -101,3 +101,15 @@ class WaypointSetupChecks(unittest.TestCase):
                 patch.object(installer.subprocess, 'run', return_value=result()) as run:
             installer.setup(self.root)
         self.assertFalse(any('install' in call.args[0] for call in run.call_args_list))
+
+    def test_prompt_seed_dependencies_are_opt_in_and_reused_after_setup(self):
+        (self.root / ('cloudflared.exe' if os.name == 'nt' else 'cloudflared')).touch()
+        with patch.object(installer, 'ensure_environment', return_value=(self.python, False)), \
+                patch.object(installer.subprocess, 'run', return_value=result()) as run:
+            installer.setup(self.root, prompt_seeds=True)
+            installs = [c.args[0] for c in run.call_args_list if 'install' in c.args[0]]
+            self.assertTrue(any('diffusers==0.39.0' in c for c in installs))
+            self.assertTrue(all(str(self.python) == c[0] for c in installs))
+            run.reset_mock()
+            installer.setup(self.root, prompt_seeds=True)
+            self.assertFalse(any('install' in c.args[0] for c in run.call_args_list))

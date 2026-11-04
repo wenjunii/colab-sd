@@ -241,6 +241,7 @@ def onReceiveText(dat, rowIndex, message):
                 supported = data.get('supported_modes', ['txt2img', 'img2img'])
                 parent().store('supported_modes', supported)
                 parent().store('server_backend', data.get('backend', 'sd-turbo'))
+                parent().store('world_prompt_seeding', bool(data.get('world_prompt_seeding', False)))
                 mode_par = getattr(parent().par, 'Mode', None)
                 if mode_par is not None and (data.get('backend') == 'waypoint' or mode_par.eval() not in supported):
                     mode_par.val = data.get('mode', supported[0])
@@ -301,6 +302,16 @@ def onReceiveText(dat, rowIndex, message):
             parent().store('world_status', str(data.get('world_status', '')))
             if data['world_phase'] != 'streaming' and data.get('world_status'):
                 parent().par.Status = data['world_status']
+        if 'world_seed_count' in data:
+            seed_info = getattr(parent().par, 'Worldseedinfo', None)
+            if seed_info is not None:
+                seed_info.val = ('Prompt seeds not enabled' if not data.get('world_prompt_seeding') else
+                                 str(data.get('world_seed_error')) if data.get('world_seed_error') else
+                                 f"SD-Turbo seeds: {data['world_seed_count']} | last {data.get('world_seed_ms', 0):.0f} ms")
+            if data.get('world_seed_error'):
+                auto_par = getattr(parent().par, 'Worldautoseed', None)
+                if auto_par is not None:
+                    auto_par.val = False
                 
         if 'inf_ms' in data:
             p_gpu = getattr(parent().par, 'Gputime', None)
@@ -425,7 +436,7 @@ def output_size():
     return int(dimensions[0]), int(dimensions[-1])
 
 
-def send_control(force=False, strength_override=None, world_reset=False):
+def send_control(force=False, strength_override=None, world_reset=False, world_reseed=False):
     if not parent().fetch('handshake_complete', True):
         return
     p = parent().par
@@ -434,10 +445,13 @@ def send_control(force=False, strength_override=None, world_reset=False):
         p.Status = 'Selected mode needs its matching Colab notebook/server'
         return
     
-    prompt_a = str(getattr(p, 'Prompta', getattr(p, 'Prompt', '')))
-    prompt_b = str(getattr(p, 'Promptb', ''))
-    blend_val = float(getattr(p, 'Promptblend', 0.0))
-    neg_prompt = str(getattr(p, 'Negprompt', ''))
+    def parameter(name, default):
+        value = getattr(p, name, default)
+        return value.eval() if hasattr(value, 'eval') else value
+    prompt_a = str(parameter('Prompta', parameter('Prompt', '')))
+    prompt_b = str(parameter('Promptb', ''))
+    blend_val = float(parameter('Promptblend', 0.0))
+    neg_prompt = str(parameter('Negprompt', ''))
     
     if strength_override is not None:
         strength_val = float(strength_override)
@@ -477,6 +491,19 @@ def send_control(force=False, strength_override=None, world_reset=False):
                'world_buttons': buttons, 'world_mouse_x': float(p.Worldmousex.eval()),
                'world_mouse_y': float(p.Worldmousey.eval()), 'world_paused': bool(p.Worldpaused.eval()),
                'world_reset': bool(world_reset), 'seed': seed_val}
+        source_par = getattr(p, 'Worldseedsource', None)
+        source = str(source_par.eval()) if source_par is not None else 'input'
+        if source == 'sdturbo' and not parent().fetch('world_prompt_seeding', False):
+            p.Status = 'Enable prompt seeds in the Waypoint notebook setup, then restart its server'
+            return
+        if parent().fetch('world_prompt_seeding', False):
+            auto_par, interval_par = getattr(p, 'Worldautoseed', None), getattr(p, 'Worldseedinterval', None)
+            msg.update(world_seed_source=source,
+                       world_auto_seed=bool(auto_par.eval()) if auto_par is not None else True,
+                       world_seed_interval=float(interval_par.eval()) if interval_par is not None else 5.0)
+            if source == 'sdturbo':
+                msg.update(prompt_a=prompt_a, prompt_b=prompt_b, blend=blend_val,
+                           world_reseed=bool(world_reseed or (force and not world_reset)))
     ws = op('websocket1')
     if ws and ws.par.active.eval():
         try:
@@ -845,7 +872,8 @@ def onValueChange(par, prev):
         elif par.name in ['Prompta', 'Promptb', 'Promptblend', 'Negprompt', 'Prompt', 'Mode', 'Source', 'Strength', 'Seed', 'Resolution']:
             # Coalesce simultaneous CHOP/slider changes into one control packet.
             parent().store('control_pending', True)
-        elif par.name in ('Worldbuttons', 'Worldmousex', 'Worldmousey', 'Worldpaused'):
+        elif par.name in ('Worldbuttons', 'Worldmousex', 'Worldmousey', 'Worldpaused',
+                          'Worldseedsource', 'Worldautoseed', 'Worldseedinterval'):
             parent().store('control_pending', True)
         elif par.name == 'Displaymode':
             rec = op('script_receiver')
@@ -866,6 +894,11 @@ def onPulse(par):
     try:
         if par.name == 'Worldseed':
             send_world_seed()
+        elif par.name == 'Worldpromptseed':
+            if str(parent().par.Mode.eval()) == 'world':
+                parent().par.Worldseedsource = 'sdturbo'
+                cb = op('websocket1_callbacks')
+                cb.module.send_control(world_reseed=True)
         elif par.name == 'Worldreset':
             if str(parent().par.Mode.eval()) == 'world':
                 cb = op('websocket1_callbacks')
@@ -893,6 +926,10 @@ def send_world_seed():
     cam, ws = op('null_cam'), op('websocket1')
     if not cam or not ws or not ws.par.active.eval():
         return
+    source_par = getattr(parent().par, 'Worldseedsource', None)
+    if source_par is not None and source_par.eval() != 'input':
+        source_par.val = 'input'
+        op('websocket1_callbacks').module.send_control()
     cam.cook(force=True)
     arr = cam.numpyArray()
     if arr is None:
@@ -1037,6 +1074,11 @@ pages 2 StreamDiffusion World
 772804868 Worldbuttons "World Button Codes (comma separated)" 1 1 0 0 1 1 1 2 0 "" "" World 3
 772804865 Worldmousex "Camera X per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 4
 772804865 Worldmousey "Camera Y per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 5
+772804879 Worldseedsource "World Seed Source" 1 1 0 0 1 1 1 2 0 "" "" World 4097 2 input "Input Image" sdturbo "SD-Turbo (Prompt A/B)" 6
+772804867 Worldautoseed "Auto Reseed (scene cuts)" 1 1 0 0 1 1 1 2 0 "" "" World 7
+772804865 Worldseedinterval "Reseed Interval (seconds, 1-3600)" 1 1 0 0 1 1 1 2 0 "" "" World 8
+772804869 Worldpromptseed "Generate Seed from Prompt" 1 1 0 0 1 1 1 2 0 "" "" World 9
+772804868 Worldseedinfo "Prompt Seed Status" 1 1 0 0 1 1 1 2 0 "" "" World 10
 ?
 '''
 
@@ -1081,6 +1123,10 @@ Worldpaused 67108928 off
 Worldbuttons 67108928 ""
 Worldmousex 67108928 0
 Worldmousey 67108928 0
+Worldseedsource 67108928 input
+Worldautoseed 67108928 on
+Worldseedinterval 67108928 5
+Worldseedinfo 67109184 "SD-Turbo seeds: --"
 ?
 '''
 
@@ -1183,7 +1229,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'latency_callbacks.n').write_text(
         'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey'
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')

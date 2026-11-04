@@ -7,7 +7,7 @@ from textwrap import dedent
 from generate_notebook import PROJECT_DIR, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py',
-           'tensorrt_backend.py', 'colab_setup.py', 'waypoint_backend.py', 'waypoint_setup.py')
+           'tensorrt_backend.py', 'colab_setup.py', 'waypoint_backend.py', 'waypoint_setup.py', 'waypoint_seed.py')
 
 
 def make_notebook(project_dir=PROJECT_DIR):
@@ -31,8 +31,17 @@ Do not run both GPU servers on the same GPU simultaneously.
 5. Set **World Button Codes** (comma-separated Owl-Control codes) and **Camera X/Y per Step**;
    values are held until changed. Set them to zero/empty to stop motion. Pause and Reset reuse weights.
 
-This checkpoint has no text conditioning: Prompt A/B, negative prompt, blending, denoise
-strength, and audio reactivity are SD-Turbo controls. Its native output is 720p, not 1024 × 768.
+This checkpoint has no direct text conditioning. For prompt-driven starting images, enable
+**ENABLE_PROMPT_SEEDS** in Step 2, then select **World Seed Source = SD-Turbo (Prompt A/B)**
+in the updated TD component. SD-Turbo generates a 768 × 432 seed inside Colab; Waypoint
+animates it at native 720p. **Auto Reseed** defaults On, with an adjustable **5-second**
+interval. Off keeps the current world until **Generate Seed from Prompt** / **Submit Prompts**.
+Each reseed resets world history and can cause a scene cut. The timer starts after the first
+usable batch and waits for output credit/batch boundaries; slow delivery can extend it.
+Both models share one GPU worker. Combined GPU performance/memory use still need validation;
+earlier Waypoint-only measurements do not establish this new mode's performance.
+Negative prompts, denoise strength, and audio reactivity do not steer prompt seeds.
+Waypoint's native output is 720p, not 1024 × 768.
 It generates four frames per controller step. GPU Inference shows the whole batch time.
 Start with Fast video quality and Video Buffer 3. HTTP/2 is the default tunnel transport.
 The default **fast** compiler profile keeps full-graph compilation but disables exhaustive
@@ -72,6 +81,8 @@ promise an A100 frame rate.
         # @markdown Repairs partial environment setup without ensurepip; keeps existing model caches.
         USE_GOOGLE_DRIVE = False # @param {type:"boolean"}
         DRIVE_MODEL_FOLDER = "StreamDiffusion/waypoint-models" # @param {type:"string"}
+        # @markdown Optional prompt-to-world pipeline. Both models share one GPU worker; new seeds reset the world.
+        ENABLE_PROMPT_SEEDS = False # @param {type:"boolean"}
 
         import os
         import sys
@@ -93,7 +104,8 @@ promise an A100 frame rate.
         colab_setup.configure_model_cache(USE_GOOGLE_DRIVE, DRIVE_MODEL_FOLDER)
         # Modern Hub uses HF_HUB_CACHE; avoid the legacy Transformers cache alias.
         os.environ.pop('TRANSFORMERS_CACHE', None)
-        waypoint_python, waypoint_tunnel = waypoint_setup.setup(runtime_root)
+        waypoint_python, waypoint_tunnel = waypoint_setup.setup(runtime_root, prompt_seeds=ENABLE_PROMPT_SEEDS)
+        os.environ['WAYPOINT_PROMPT_SEEDS'] = '1' if ENABLE_PROMPT_SEEDS else '0'
         os.environ['TORCHINDUCTOR_CACHE_DIR'] = str(runtime_root / 'inductor-cache')
         print('Waypoint environment ready. Run Step 3.')
     ''')
@@ -119,7 +131,7 @@ promise an A100 frame rate.
             url = waypoint_session.start()
             print('Paste this URL into the updated TouchDesigner component:')
             print(url, flush=True)
-            print('Choose a scene image as Input Source, then pulse Seed World from Input.')
+            print('World page: choose SD-Turbo prompt seeds (if enabled), or Seed World from Input.')
             waypoint_session.wait()
         except KeyboardInterrupt:
             print('Stopping this Waypoint session...')

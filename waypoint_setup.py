@@ -16,6 +16,9 @@ DEPENDENCIES = (
     'opencv-python-headless==4.13.0.92', 'pillow==13.0.0',
     'transformers==5.10.1', 'huggingface-hub==1.7.2',
 )
+# Compatible with the existing Hub 1.7 / Transformers 5 pins. Newer Diffusers
+# require a newer Hub; do not silently upgrade the working world-model stack.
+SEED_DEPENDENCIES = ('diffusers==0.39.0',)
 
 
 def _capture(command, stage):
@@ -61,13 +64,14 @@ def ensure_environment(environment):
     return python, True
 
 
-def setup(root):
+def setup(root, prompt_seeds=False):
     if platform.system() not in ('Linux', 'Windows') or platform.machine().lower() not in ('x86_64', 'amd64'):
         raise RuntimeError('This installer supports x86-64 Linux and Windows CUDA hosts')
     root = Path(root).resolve()
     environment = root / 'venv'
     marker = root / 'installed.json'
-    signature = {'python': list(sys.version_info[:2]), 'dependencies': list(DEPENDENCIES)}
+    dependencies = (*DEPENDENCIES, *(SEED_DEPENDENCIES if prompt_seeds else ()))
+    signature = {'python': list(sys.version_info[:2]), 'dependencies': list(dependencies)}
     root.mkdir(parents=True, exist_ok=True)
     python, repaired = ensure_environment(environment)
     reusable = not repaired and marker.exists() and json.loads(marker.read_text()) == signature
@@ -75,7 +79,7 @@ def setup(root):
         # Windows PyPI Torch may be CPU-only; select the CUDA build explicitly.
         subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir',
                         'torch==2.11.0', '--index-url', 'https://download.pytorch.org/whl/cu130'], check=True)
-        subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', *DEPENDENCIES], check=True)
+        subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', *dependencies], check=True)
     subprocess.run([str(python), '-m', 'pip', 'check'], check=True)
     # Fail before model downloads when the isolated runtime cannot use CUDA.
     subprocess.run([str(python), '-c',

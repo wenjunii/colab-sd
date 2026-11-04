@@ -39,4 +39,8 @@ Worldpaused 67108928 off
 Worldbuttons 67108928 ""
 Worldmousex 67108928 0
 Worldmousey 67108928 0
+Worldseedsource 67108928 input
+Worldautoseed 67108928 on
+Worldseedinterval 67108928 5
+Worldseedinfo 67109184 "SD-Turbo seeds: --"
 ?

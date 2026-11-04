@@ -488,7 +488,8 @@ def load_pipeline():
         from waypoint_backend import WaypointBackend
         pipeline_ready = False
         world_backend = WaypointBackend.load(os.environ.get('WAYPOINT_QUANT', 'intw8a8'),
-                                             os.environ.get('WAYPOINT_COMPILE_PROFILE', 'fast'))
+                                            os.environ.get('WAYPOINT_COMPILE_PROFILE', 'fast'),
+                                            prompt_seeds=os.environ.get('WAYPOINT_PROMPT_SEEDS', '0') == '1')
         pipeline_revision += 1
         pipeline_ready = True
         print('>>> Waypoint loaded. Seed an image from TouchDesigner; first generation compiles kernels.', flush=True)
@@ -969,10 +970,11 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     ):
                         # Merge rapid slider/audio changes while the worker is
                         # busy; the latest value of each control wins.
-                        reset_pending = pending_control.get('world_reset') is True
+                        world_pulses = {key: True for key in ('world_reset', 'world_reseed')
+                                        if pending_control.get(key) is True}
                         pending_control.update(data)
-                        if is_world_backend and reset_pending:
-                            pending_control['world_reset'] = True
+                        if is_world_backend:
+                            pending_control.update(world_pulses)
                         control_available.set()
                 except (ValueError, TypeError):
                     await send_json({"type": "error", "code": "invalid_message",
