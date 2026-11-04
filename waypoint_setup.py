@@ -29,7 +29,7 @@ def _capture(command, stage):
     return result.stdout.strip()
 
 
-def ensure_environment(environment):
+def ensure_environment(environment, label='Waypoint'):
     """Create or repair pip without relying on the host's ensurepip package."""
     environment = Path(environment).resolve()
     python = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
@@ -45,8 +45,8 @@ def ensure_environment(environment):
     if (Path(state['prefix']).resolve() != environment
             or state['prefix'] == state['base']
             or state['version'] != list(sys.version_info[:2])):
-        raise RuntimeError('Waypoint Python is not an isolated environment for this Python version; '
-                           'use a fresh runtime or a different Waypoint runtime folder')
+        raise RuntimeError(f'{label} Python is not an isolated environment for this Python version; '
+                           'use a fresh runtime or a different runtime folder')
     probe = subprocess.run([str(python), '-I', '-m', 'pip', '--version'],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if probe.returncode == 0:
@@ -55,7 +55,7 @@ def ensure_environment(environment):
         # An ensurepip failure leaves python/pyvenv.cfg but may omit activation
         # scripts. Complete these files in place; preserve installed packages.
         venv.EnvBuilder(with_pip=False).create(environment)
-    print('Bootstrapping pip in the isolated Waypoint environment (without ensurepip)...', flush=True)
+    print(f'Bootstrapping pip in the isolated {label} environment (without ensurepip)...', flush=True)
     output = _capture([sys.executable, '-m', 'pip', '--python', str(python),
                        'install', '--no-cache-dir', '--force-reinstall', BOOTSTRAP_PIP], 'Isolated pip bootstrap')
     if output:

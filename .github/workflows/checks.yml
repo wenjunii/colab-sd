@@ -84,5 +84,7 @@ jobs:
           print('Disposable import packages removed; CPU test environment preserved.')
           PY
       - run: python generate_notebook.py --check
+      - name: Import pinned Krea HF runtime without GPU packages or weights
+        run: python -B check_krea_imports.py
       - run: git diff --check
       - run: python audit_dependencies.py

@@ -408,8 +408,8 @@ class TouchDesignerChecks(unittest.TestCase):
         menu_count = int(fields[menu_start + 1])
         values = fields[menu_start + 2:-1:2]
         self.assertEqual(len(values), menu_count)
-        self.assertEqual(menu_count, len(server.output_resolutions) + 1)
-        self.assertEqual(values[-1], '1280x720')  # native Waypoint only; SD rejects it
+        self.assertEqual(menu_count, len(server.output_resolutions) + 2)  # Waypoint and Krea native sizes
+        self.assertEqual(values[-2:], ['1280x720', '832x480'])  # backend-specific native sizes
         self.assertIn('1024x768', values)
         self.assertIn('768x1024', values)
         messages = []

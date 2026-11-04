@@ -1,6 +1,6 @@
 # ⚡ StreamDiffusion Remote TouchDesigner Bridge (`colab-sd`)
 
-Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** (Stability AI SD-Turbo) running on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. An optional, experimental **Waypoint world-model backend** adds image-seeded interactive video on Colab. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
+Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** (Stability AI SD-Turbo) running on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. Optional, separate Colab notebooks add **Waypoint** image-seeded world video and a **Krea Realtime** text-to-video trial. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
 
 ![TouchDesigner](https://img.shields.io/badge/TouchDesigner-2023%2F2025-orange?logo=derivative)
 ![Model](https://img.shields.io/badge/Model-SD--Turbo%20(up%20to%201024x768)-blue)
@@ -19,7 +19,8 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
   * **Text-to-Image (`txt2img`):** Continuous visual stream driven by prompts, blend weights, and seeds, using a single-image SD-Turbo batch.
   * **Image-to-Image / Video-to-Video (`img2img`):** Real-time interactive stylization driven by TouchDesigner TOPs (external generators like `Noise TOP`, live webcam feed, or movie files).
   * **World Model (`world`, optional Waypoint notebook):** Image-seeded, controller-driven video at native **1280 × 720**. Separate runtime and weights; no Scope dependency. See the setup below.
-* **Output Resolution / Ratio:** SD-Turbo supports 16 square, landscape, and portrait presets, up to **1024 × 768** or **768 × 1024**. **512 × 512** remains the default. Waypoint uses the additional **1280 × 720 (Waypoint only)** entry and locks its native dimensions. This changes actual server generation dimensions, rather than resizing the received image.
+  * **Krea Realtime (`krea`, experimental notebook):** Prompt A drives temporal video at **832 × 480**, with Pause/Reset controls. Uses the Apache-declared HF modular release; GPU validation is pending.
+* **Output Resolution / Ratio:** SD-Turbo supports 16 square, landscape, and portrait presets, up to **1024 × 768** or **768 × 1024**. **512 × 512** remains the default. Waypoint locks **1280 × 720 (Waypoint only)**; the Krea trial locks **832 × 480 (Krea only)**. This changes actual server generation dimensions, rather than resizing the received image.
 * **Video Quality:** Compress network video independently of generation resolution. Fast targets 48 KB/frame, Balanced 64 KB, and Detail retains the larger resolution-based budget. Changing this control takes effect without a model or TensorRT rebuild.
 * **Dual-Prompt Latent Morphing:** Crossfade between **Prompt A** and **Prompt B** using **Prompt Blend** ($0.0 \dots 1.0$). A bounded embedding cache avoids re-running CLIP for blend, seed, and repeated control updates. Strength schedule changes still require preparation.
 * **Negative Prompt Control:** Retained for compatibility and snapshot metadata. SD-Turbo runs without classifier-free guidance and does not apply negative conditioning; see the [model card](https://huggingface.co/stabilityai/sd-turbo).
@@ -42,6 +43,29 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 * **Standalone Drag-and-Drop Component (`.tox`):** Single self-contained `StreamDiffusion_Remote.tox` ready to drop into ANY TouchDesigner project.
 
 ---
+
+## Krea Realtime on Colab A100 40 GB+ (experimental)
+
+[Open the Krea notebook in Colab](https://colab.research.google.com/github/wenjunii/colab-sd/blob/main/Krea_Colab_Server.ipynb).
+Use it later in a **fresh GPU runtime**, after finishing any current test. Existing running
+Colab scripts and loaded TouchDesigner components are not updated automatically.
+
+**Commercial use is a selection requirement.** The [Krea GitHub application](https://github.com/krea-ai/realtime-video/blob/main/LICENSE.md) is CC-BY-NC-SA-4.0, so this project does not install or copy that application. This trial instead loads the separate [official HF modular runtime/model](https://huggingface.co/krea/krea-realtime-video/tree/9a2ceea280e5d584c6a28d384a9c19e38c810f8c), whose model card declares Apache-2.0 and whose modular inference blocks carry Apache-2.0 headers. Its [Wan text encoder/tokenizer/VAE/scheduler distribution](https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers/tree/38ec498cb3208fb688890f8cc7e94ede2cbd7f68) also declares Apache-2.0. These are distinct distributions with distinct terms; the HF declaration does not relicense the GitHub application. Preserve upstream notices and assess the specific components/redistribution you ship. The bridge's MIT license does not replace model or dependency terms.
+
+The exact HF revisions are `9a2ceea280e5d584c6a28d384a9c19e38c810f8c` (Krea) and `38ec498cb3208fb688890f8cc7e94ede2cbd7f68` (Wan). `krea_assets.py` checks SHA-256 hashes of the 14 runtime source/config files before executing custom code. It downloads only Krea's sharded transformer plus Wan's supporting components, avoiding the duplicate root Krea checkpoint and the unused Wan transformer. Cached upstream files are preserved; local component paths are written to a derived configuration in the Krea runtime folder.
+
+1. Run Step 1 on a fresh **A100 40 GB or larger** runtime. It requires Ampere+ CUDA, at least **35 GiB total / 30 GiB free** VRAM; L4/T4 are rejected. This is a preflight threshold, not proof that every generation will fit.
+2. Step 2 installs a separate environment at `/content/colab-sd-krea/venv`. It reuses the pip bootstrap helper without installing Waypoint/WorldEngine, SD-Turbo, TensorRT, SageAttention or FlashAttention extensions. The notebook kernel and existing environments are preserved. Setup refuses an occupied port 8000 before modifying runtime files; it never stops an existing bridge.
+3. Drive storage defaults On at `MyDrive/StreamDiffusion/krea-models`; allow roughly **45 GB** for pinned original weights/components. INT8 conversion happens in memory, so Drive avoids downloads but does not eliminate loading/conversion or kernel compilation on a fresh VM. Modules/compiled kernels use private VM-local caches.
+4. Launch Step 3, open the updated `.toe` / `.tox`, paste the new URL and enable Connect. The handshake selects **Krea Realtime (Text-to-Video)** and **832 × 480**. Set **Prompt A** / **Submit Prompts**; prompt changes apply at the next chunk boundary. Use the **Krea** page for **Pause Krea**, **Reset Krea Clip**, and clip progress. Changing Seed also resets history. Reset/pause reuse loaded weights.
+
+The first trial uses **INT8 transformer weights**, a CPU-offloaded BF16 text encoder, a resident FP16 Wan VAE, **four denoise steps**, and PyTorch attention. Projection fusion is disabled to preserve quantized linears. Only Prompt A and Seed steer this T2V path; Prompt B/blend, negative prompts, input video, denoise strength, audio reactivity and Waypoint movement controls are unused. Other sizes are disabled because the pinned custom transformer assumes a 1,560-token frame at 832 × 480.
+
+Usually the first chunk decodes nine frames and later chunks twelve. GPU Inference displays the **whole chunk time**, not individual-frame latency. One decoded chunk is queued; ACK credits bound video delivery and gate further generation. Start with Fast video quality / Video Buffer 3 / the default HTTP/2 tunnel. Generation errors stop automatic retries until Reset. Pings/progress continue during generation; Pause waits for a running chunk to complete.
+
+Clips repeat after **CLIP_CHUNKS = 64** by default (about 32 seconds at 24 FPS), adjustable from 1 to 64 in Step 3. Each boundary clears temporal/VAE history and increments the noise seed; **scene cuts can occur**. This trial does not promise uninterrupted infinite-history video. Keep Colab's launch cell and TouchDesigner running.
+
+**Validation:** pinned custom blocks/transformer class and VAE/quantization APIs import on the existing CPU test stack. CPU tests cover typed controls, chunk/embedding lifecycle, pause/reset/rollover, source hashes, fixed-size handshake and bounded delivery. **INT8 model loading, peak A100 memory, first-frame time, visual quality and sustained FPS have not been GPU-tested.** Krea's published 11 FPS result uses a B200 and does not predict A100 40 GB performance. The current Colab session was left untouched.
 
 ## Waypoint on Colab A100 40 GB (experimental)
 
@@ -408,9 +432,11 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `workstation.py` | Isolated Windows/Linux CUDA setup, pairing token, and LAN/VPN/Cloudflare launch |
 | `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, validated immutable deployment archives, and per-profile builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
-| `generate_notebook.py` / `generate_waypoint_notebook.py` | Self-contained SD-Turbo and Waypoint notebook generation and freshness checking |
+| `generate_notebook.py` / `generate_waypoint_notebook.py` / `generate_krea_notebook.py` | Self-contained SD-Turbo, Waypoint and Krea notebooks and freshness checking |
 | `waypoint_seed.py` | Optional pinned SD-Turbo FP16 seed generator and bounded prompt embedding cache |
 | `waypoint_backend.py` / `waypoint_setup.py` | Optional native-720p world-model adapter, bounded four-frame queue, pinned models, and isolated GPU environment |
+| `krea_backend.py` / `krea_assets.py` / `krea_setup.py` | Optional fixed-480p T2V adapter, verified pinned HF runtime, bounded chunk queue and isolated INT8 environment |
+| `check_krea_imports.py` | Disposable CPU import check of the pinned Krea source; downloads no model weights |
 
 ### Shared local TouchDesigner resources
 

@@ -4,9 +4,11 @@ import traceback
 import gc
 import hmac
 
-is_world_backend = os.environ.get('BRIDGE_BACKEND', 'sd-turbo') == 'waypoint'
+backend_name = os.environ.get('BRIDGE_BACKEND', 'sd-turbo')
+is_world_backend = backend_name == 'waypoint'
+is_krea_backend = backend_name == 'krea'
 
-if not is_world_backend:
+if not (is_world_backend or is_krea_backend):
     # 1. Compatibility shims for huggingface_hub
     import huggingface_hub
     import huggingface_hub.constants
@@ -120,6 +122,7 @@ telemetry_lock = threading.Lock()
 telemetry_cache = (0.0, "--", "--")
 active_client = None
 world_backend = None
+krea_backend = None
 pipeline_revision = 0
 last_pipeline_error = None
 jpeg_quality_hints = {}
@@ -131,6 +134,8 @@ img2img_engine = "PyTorch (FP16)"
 
 
 def engine_for_mode(mode=None):
+    if is_krea_backend:
+        return 'Krea 14B (INT8 transformer)'
     if is_world_backend:
         return 'Waypoint (INT8)' if os.environ.get('WAYPOINT_QUANT', 'intw8a8') == 'intw8a8' else 'Waypoint (BF16)'
     if enable_tensorrt and not pipeline_ready:
@@ -146,26 +151,33 @@ current_neg_prompt = "blurry, low quality, distorted, watermark"
 current_mode = "txt2img"
 current_seed = 42
 current_strength = 0.6
-output_width, output_height = ((1280, 720) if is_world_backend else
+output_width, output_height = ((832, 480) if is_krea_backend else (1280, 720) if is_world_backend else
     resolution({'width': int(os.environ.get('BRIDGE_INITIAL_WIDTH', '512')),
                 'height': int(os.environ.get('BRIDGE_INITIAL_HEIGHT', '512'))}))
 output_resolutions = OUTPUT_RESOLUTIONS
 if is_world_backend:
     current_mode = 'world'
+elif is_krea_backend:
+    current_mode = 'krea'
 allow_tensorrt_resize = os.environ.get('BRIDGE_TRT_ALLOW_RESIZE', '0') == '1'
 
 
 def resolution_locked():
-    return is_world_backend or (enable_tensorrt and not allow_tensorrt_resize)
+    return is_world_backend or is_krea_backend or (enable_tensorrt and not allow_tensorrt_resize)
 
 
 def requested_resolution(data):
+    if is_krea_backend:
+        return (832, 480)
     if is_world_backend:
         return (1280, 720)
     return resolution(data, (output_width, output_height))
 
 
 def validated_controls(data, current):
+    if is_krea_backend:
+        from krea_backend import validate_krea_controls
+        return validate_krea_controls(data)
     if is_world_backend:
         from waypoint_backend import validate_world_controls
         return validate_world_controls(data, current)
@@ -173,6 +185,8 @@ def validated_controls(data, current):
 
 
 def world_progress():
+    if is_krea_backend and krea_backend is not None:
+        return krea_backend.progress()
     return world_backend.progress() if is_world_backend and world_backend is not None else {}
 
 def set_seed(s):
@@ -314,15 +328,15 @@ def run_model_inference(input_image=None, mode=None):
 def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
     """Decode, infer, and encode on the worker; return complete frame timings."""
     started = time.perf_counter()
-    if is_world_backend:
-        if frame_bytes is not None:
+    if is_world_backend or is_krea_backend:
+        if is_world_backend and frame_bytes is not None:
             world_backend.set_seed_image(frame_bytes)
-        result = world_backend.next_frame()
+        result = (krea_backend if is_krea_backend else world_backend).next_frame()
         if result is None:
             return None
         out_bgr, batch_ms = result
         jpg = compress_frame(out_bgr, max_frame_bytes, allow_oversize=True)
-        # The GPU readout is a four-frame batch duration, not single-frame latency.
+        # The GPU readout is the generated chunk duration, not single-frame latency.
         return jpg, batch_ms, (time.perf_counter() - started) * 1000
     input_image = None
     if frame_bytes is not None:
@@ -354,7 +368,15 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
 def apply_controls(data):
     """Apply an entire update between inference calls on the same worker."""
     global current_mode, current_seed, output_width, output_height, last_pipeline_error, pipeline_ready
-    global pipeline_revision
+    global pipeline_revision, current_prompt_a
+    if is_krea_backend:
+        data = validated_controls(data, (output_width, output_height))
+        previous_seed = krea_backend.seed
+        krea_backend.configure(data)
+        current_seed, current_prompt_a = krea_backend.seed, krea_backend.prompt
+        if data.get('krea_reset') or previous_seed != current_seed:
+            pipeline_revision += 1
+        return
     if is_world_backend:
         data = validated_controls(data, (output_width, output_height))
         world_backend.configure(data)
@@ -481,7 +503,19 @@ def create_txt2img_pipeline():
 
 def load_pipeline():
     global stream_txt2img, stream_img2img, pipeline_ready, active_engine, applied_prompt_state
-    global pipeline_revision, img2img_engine, world_backend
+    global pipeline_revision, img2img_engine, world_backend, krea_backend
+    if is_krea_backend:
+        if enable_tensorrt:
+            raise RuntimeError('Krea uses its own INT8 runtime; disable TensorRT')
+        from pathlib import Path
+        from krea_backend import KreaBackend
+        pipeline_ready = False
+        krea_backend = KreaBackend.load(Path(__file__).resolve().parent,
+                                        clip_blocks=int(os.environ.get('KREA_CLIP_BLOCKS', '64')))
+        pipeline_revision += 1
+        pipeline_ready = True
+        print('>>> Krea INT8 loaded. Submit Prompt A in TouchDesigner; first chunk may compile kernels.', flush=True)
+        return
     if is_world_backend:
         if enable_tensorrt:
             raise RuntimeError('Waypoint uses its own INT8/BF16 runtime; disable TensorRT')
@@ -628,8 +662,8 @@ def health():
         "width": output_width, "height": output_height,
         "client_connected": active_client is not None,
         "last_error": last_pipeline_error,
-        "requested_engine": engine_for_mode() if is_world_backend else "TensorRT" if enable_tensorrt else "PyTorch (FP16)",
-        "backend": 'waypoint' if is_world_backend else 'sd-turbo',
+        "requested_engine": engine_for_mode() if is_world_backend or is_krea_backend else "TensorRT" if enable_tensorrt else "PyTorch (FP16)",
+        "backend": backend_name,
         "session_id": os.environ.get('BRIDGE_SESSION_ID'),
         "authentication_required": bool(access_token),
         "resolution_locked": resolution_locked(),
@@ -643,6 +677,8 @@ def configuration_error(code):
         status = f'Output fixed at {output_width} x {output_height}; select the matching backend and startup size'
     elif code == "invalid_control":
         status = "Invalid controls: check backend, output size, and control values"
+    elif is_krea_backend:
+        status = 'Krea configuration failed; see server logs, then reset the clip'
     elif is_world_backend:
         status = 'World configuration failed; see server logs, then reset or reseed the world'
     elif pipeline_ready:
@@ -777,7 +813,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 })
                 if time.perf_counter() >= next_log:
                     if progress and progress['world_phase'] != 'streaming':
-                        logger.info('Waypoint progress: %s', progress['world_status'])
+                        logger.info('%s progress: %s', backend_name, progress['world_status'])
                     logger.info('delivery: %s, %s bytes/frame, send=%sms, display ACK RTT=%sms, '
                                 'buffer wait=%sms, client cook=%sms, window=%d, inflight=%d',
                                 video_quality, latest_stats.get('frame_bytes', '--'),
@@ -838,15 +874,14 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     await asyncio.sleep(0.01)
                     continue
 
-                if mode == 'world':
-                    # Only the updated client understands the world-mode protocol.
-                    # Wait for its ACK negotiation before starting a cached world.
+                if mode in ('world', 'krea'):
+                    # Stateful generation requires bounded delivery and a configured controller.
                     if not ack_enabled:
                         await asyncio.sleep(0.02)
                         continue
-                    if pending_frame is not None:
+                    if mode == 'world' and pending_frame is not None:
                         frame_bytes, pending_frame = pending_frame, None
-                    elif not world_backend.can_generate:
+                    elif not (krea_backend if mode == 'krea' else world_backend).can_generate:
                         await asyncio.sleep(0.02)
                         continue
 
@@ -875,7 +910,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     if frame_count % 100 == 1:
                         logger.info("%s: frame #%d (inference %.1fms, processing %.1fms, %d bytes)",
                                     mode, frame_count, inf_ms, process_ms, len(jpg_bytes))
-                if mode in ('txt2img', 'world'):
+                if mode in ('txt2img', 'world', 'krea'):
                     await asyncio.sleep(max(0.0, 1.0 / max_stream_fps - (time.perf_counter() - started)))
             except (WebSocketDisconnect, RuntimeError, OSError):
                 logger.exception("Streaming stopped in %s", mode)
@@ -902,9 +937,9 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 
     tasks = []
     try:
-        if is_world_backend:
+        if is_world_backend or is_krea_backend:
             # Queue behind any last GPU call from the previous controller.
-            await loop.run_in_executor(model_executor, world_backend.release_controls)
+            await loop.run_in_executor(model_executor, (krea_backend if is_krea_backend else world_backend).release_controls)
         vram, temp = await loop.run_in_executor(None, get_gpu_telemetry)
         await send_json({
             "type": "welcome", "message": "StreamDiffusion server connected",
@@ -916,13 +951,13 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             "vram": vram, "temp": temp,
             'resolution_locked': resolution_locked(), 'latency_probe': True, 'frame_ack': True,
             'video_quality_profiles': list(VIDEO_QUALITY_LIMITS),
-            'backend': 'waypoint' if is_world_backend else 'sd-turbo',
-            'supported_modes': ['world'] if is_world_backend else ['txt2img', 'img2img'],
+            'backend': backend_name,
+            'supported_modes': ['krea'] if is_krea_backend else ['world'] if is_world_backend else ['txt2img', 'img2img'],
             'world_seed_required': is_world_backend and world_backend.seed_image is None,
-            'inference_batch_frames': 4 if is_world_backend else 1,
+            'inference_batch_frames': 12 if is_krea_backend else 4 if is_world_backend else 1,
             **world_progress(),
         })
-        modes = ('world',) if is_world_backend else ('txt2img', 'img2img')
+        modes = ('krea',) if is_krea_backend else ('world',) if is_world_backend else ('txt2img', 'img2img')
         tasks = [asyncio.create_task(supervise(generation_loop(mode))) for mode in modes]
         tasks.append(asyncio.create_task(supervise(telemetry_loop())))
         tasks.append(asyncio.create_task(supervise(control_loop())))
@@ -970,10 +1005,10 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     ):
                         # Merge rapid slider/audio changes while the worker is
                         # busy; the latest value of each control wins.
-                        world_pulses = {key: True for key in ('world_reset', 'world_reseed')
+                        world_pulses = {key: True for key in ('world_reset', 'world_reseed', 'krea_reset')
                                         if pending_control.get(key) is True}
                         pending_control.update(data)
-                        if is_world_backend:
+                        if is_world_backend or is_krea_backend:
                             pending_control.update(world_pulses)
                         control_available.set()
                 except (ValueError, TypeError):
@@ -1006,9 +1041,9 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if is_world_backend:
+        if is_world_backend or is_krea_backend:
             # Await queued model work before releasing controller ownership.
-            await loop.run_in_executor(model_executor, world_backend.release_controls)
+            await loop.run_in_executor(model_executor, (krea_backend if is_krea_backend else world_backend).release_controls)
         if active_client is websocket:
             active_client = None
 
