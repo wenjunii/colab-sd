@@ -35,14 +35,22 @@ This checkpoint has no text conditioning: Prompt A/B, negative prompt, blending,
 strength, and audio reactivity are SD-Turbo controls. Its native output is 720p, not 1024 × 768.
 It generates four frames per controller step. GPU Inference shows the whole batch time.
 Start with Fast video quality and Video Buffer 3. HTTP/2 is the default tunnel transport.
+The default **fast** compiler profile keeps full-graph compilation but disables exhaustive
+autotuning, coordinate-descent tuning, and CUDA-graph capture. **max-autotune** restores the
+upstream policy for throughput comparisons after a successful first-frame test; it can take
+much longer to start. Neither profile changes native resolution or quantization.
+The updated TouchDesigner Status and server `/health` report seed preparation and first-batch
+generation separately, with elapsed time. Model-loaded readiness does not mean a frame is ready.
 
 Keep the Colab launch cell and TouchDesigner running. Interrupt the launch cell to stop its
 server and tunnel. Drive persists weights, not the running GPU or compiled TensorRT engines.
 Waypoint uses TorchInductor, not the SD-Turbo TensorRT cache. First-run compilation is still
 required in a fresh runtime; cross-VM compiled-kernel reuse is not enabled here.
 
-A100 40 GB fit, image quality, startup time and sustained delivered FPS still need live validation.
-The runtime documents INT8 support for Ampere; this notebook does not promise an A100 frame rate.
+Basic native-720p INT8 generation was tested on an A100 40 GB with the fast profile and an
+already-used VM/cache. Fresh-VM startup, long-running world quality, other profiles and sustained
+TouchDesigner FPS still need validation. See the README measurements; this notebook does not
+promise an A100 frame rate.
 
 [Model](https://huggingface.co/Overworld/Waypoint-1.5-1B) ·
 [Runtime and licenses](https://github.com/Overworldai/world_engine) ·
@@ -89,6 +97,8 @@ The runtime documents INT8 support for Ampere; this notebook does not promise an
     launch = dedent('''\
         # @title Step 3: Launch Waypoint and Cloudflare
         QUANTIZATION = "intw8a8" # @param ["intw8a8", "bf16"]
+        # @markdown Fast reduces first-frame compilation work. Max-autotune trades startup time for possible throughput.
+        COMPILE_PROFILE = "fast" # @param ["fast", "max-autotune"]
         MAX_FPS = 20 # @param {type:"integer"}
         TUNNEL_PROTOCOL = "http2" # @param ["http2", "auto", "quic"]
         if 'waypoint_session' in globals():
@@ -97,6 +107,7 @@ The runtime documents INT8 support for Ampere; this notebook does not promise an
         import colab_launcher
         importlib.reload(colab_launcher)
         os.environ['WAYPOINT_QUANT'] = QUANTIZATION
+        os.environ['WAYPOINT_COMPILE_PROFILE'] = COMPILE_PROFILE
         waypoint_session = colab_launcher.BridgeSession(
             root=runtime_root, backend='waypoint', server_script='colab_server.py',
             python_executable=waypoint_python, cloudflared=waypoint_tunnel,

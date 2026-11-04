@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -18,7 +19,7 @@ import colab_launcher
 import colab_server as server
 import generate_waypoint_notebook as notebook
 from waypoint_backend import (WaypointBackend, WORLD_SIZE, validate_world_controls,
-                              MODEL_REVISION, VAE_REVISION)
+                              MODEL_REVISION, VAE_REVISION, engine_class_for_profile)
 from test_streaming import FakeWebSocket, Par, until
 
 
@@ -90,6 +91,7 @@ class WaypointChecks(unittest.TestCase):
     def test_loader_pins_both_models_and_selects_a100_compatible_quantization(self):
         world = SimpleNamespace(WorldEngine=Mock(), CtrlInput=Mock())
         with patch.dict('sys.modules', {'world_engine': world}), \
+                patch('waypoint_backend.engine_class_for_profile', return_value=world.WorldEngine), \
                 patch('huggingface_hub.snapshot_download', side_effect=['local/model', 'local/vae']) as download, \
                 patch.object(torch.cuda, 'is_available', return_value=True), \
                 patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)):
@@ -132,6 +134,54 @@ class WaypointChecks(unittest.TestCase):
             self.assertEqual(sources[name], (notebook.PROJECT_DIR / name).read_text(encoding='utf-8'))
         self.assertIn('backend=\'waypoint\'', ''.join(book['cells'][3]['source']))
 
+    def test_fast_profile_recompiles_original_functions_without_mutating_upstream(self):
+        class Engine:
+            def _cache_pass(self, value):
+                return value + 1
+            def _denoise_pass(self, value):
+                return value * 2
+        original = Engine._cache_pass
+        compiler = SimpleNamespace(compile=Mock(side_effect=lambda function, **kw: function))
+        fast = engine_class_for_profile(Engine, compiler, 'fast')
+        self.assertEqual((fast()._cache_pass(2), fast()._denoise_pass(2)), (3, 4))
+        self.assertIs(Engine._cache_pass, original)
+        for call in compiler.compile.call_args_list:
+            self.assertTrue(call.kwargs['fullgraph'])
+            self.assertFalse(call.kwargs['options']['max_autotune'])
+            self.assertFalse(call.kwargs['options']['triton.cudagraphs'])
+        compiler.compile.reset_mock()
+        self.assertIs(engine_class_for_profile(Engine, compiler, 'max-autotune'), Engine)
+        compiler.compile.assert_not_called()
+        with self.assertRaises(ValueError):
+            engine_class_for_profile(Engine, compiler, 'unknown')
+
+    def test_world_progress_distinguishes_seed_preparation_first_batch_and_pause(self):
+        backend = fake_backend()
+        self.assertEqual(backend.progress()['world_phase'], 'awaiting_seed')
+        phases = []
+        backend.engine.append_frame.side_effect = lambda image: phases.append(backend.progress()['world_phase'])
+        backend.set_seed_image(seed_jpeg())
+        self.assertEqual(phases, ['seeding'])
+        self.assertEqual(backend.progress()['world_phase'], 'ready')
+        batch = backend.engine.gen_frame.return_value
+        backend.engine.gen_frame.side_effect = lambda **kw: (phases.append(backend.progress()['world_phase']) or batch)
+        backend.next_frame()
+        self.assertEqual(phases[-1], 'first_batch')
+        self.assertEqual(backend.progress()['world_phase'], 'streaming')
+        backend.configure({'world_paused': True})
+        self.assertEqual(backend.progress()['world_phase'], 'paused')
+
+    def test_td_idle_display_preserves_world_progress(self):
+        storage = {'connected': True, 'server_ready': True, 'last_frame_receive': 0,
+                   'world_phase': 'first_batch', 'world_status': 'Generating first world batch (42s)'}
+        pars = SimpleNamespace(Mode=Par('world'), Status=Par(''), Fps=Par(''))
+        comp = SimpleNamespace(par=pars, fetch=lambda key, default=None: storage.get(key, default),
+                               store=lambda key, value: storage.__setitem__(key, value))
+        ns = {'parent': lambda: comp, 'op': lambda name: None}
+        exec(builder.EXEC_SEND_FRAME_CODE, ns)
+        ns['onFrameStart'](1)
+        self.assertEqual(pars.Status.val, 'Generating first world batch (42s)')
+
     def test_td_world_handshake_selects_native_mode_and_sends_supported_controls(self):
         pars = SimpleNamespace(Mode=Par('txt2img'), Resolution=Par('512'), Status=Par(''),
                                Worldbuttons=Par('87,65'), Worldmousex=Par(.2), Worldmousey=Par(0),
@@ -156,6 +206,35 @@ class WaypointChecks(unittest.TestCase):
 
 
 class WorldTransportChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_progress_and_pings_arrive_while_first_seed_blocks_gpu_worker(self):
+        backend, ws = fake_backend(), FakeWebSocket()
+        started, release = threading.Event(), threading.Event()
+        def prepare(image):
+            started.set()
+            if not release.wait(5):
+                raise RuntimeError('test seed worker timed out')
+        backend.engine.append_frame.side_effect = prepare
+        with patch.multiple(server, is_world_backend=True, world_backend=backend,
+                            pipeline_ready=True, current_mode='world', output_width=1280,
+                            output_height=720, active_client=None, access_token=''), \
+                patch.object(server, 'get_gpu_telemetry', return_value=('--', '--')):
+            task = asyncio.create_task(server.websocket_stream_endpoint(ws))
+            try:
+                await until(lambda: ws.text)
+                await ws.incoming.put({'text': json.dumps({'type': 'client_options', 'frame_ack': True, 'frame_window': 1})})
+                await ws.incoming.put({'text': json.dumps({'type': 'world_seed'})})
+                await ws.incoming.put({'bytes': seed_jpeg()})
+                await until(started.is_set)
+                await ws.incoming.put({'text': json.dumps({'type': 'ping', 'sent_at': 123})})
+                await until(lambda: any(row.get('type') == 'pong' for row in ws.text))
+                await until(lambda: any(row.get('type') == 'stats' and row.get('world_phase') == 'seeding'
+                                        for row in ws.text), timeout=3)
+                self.assertEqual(ws.binary, [])
+            finally:
+                release.set()
+                await ws.close()
+                await asyncio.wait_for(task, 3)
+
     async def test_existing_world_waits_for_credit_negotiation_on_reconnect(self):
         backend = fake_backend()
         backend.set_seed_image(seed_jpeg())

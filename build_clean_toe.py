@@ -147,6 +147,8 @@ def onDisconnect(dat):
     parent().store('resolution_locked', False)
     parent().store('server_ready', False)
     parent().store('handshake_complete', False)
+    parent().store('world_phase', None)
+    parent().store('world_status', '')
     parent().store('frame_ack_supported', False)
     parent().store('pending_frame_acks', [])
     parent().store('display_pending', False)
@@ -293,6 +295,12 @@ def onReceiveText(dat, rowIndex, message):
             p_status = getattr(parent().par, 'Status', None)
             if p_status is not None:
                 p_status.val = data['status']
+
+        if 'world_phase' in data:
+            parent().store('world_phase', data['world_phase'])
+            parent().store('world_status', str(data.get('world_status', '')))
+            if data['world_phase'] != 'streaming' and data.get('world_status'):
+                parent().par.Status = data['world_status']
                 
         if 'inf_ms' in data:
             p_gpu = getattr(parent().par, 'Gputime', None)
@@ -364,6 +372,8 @@ def onReceiveBinary(dat, contents):
             pending.append(frame_id)
             parent().store('pending_frame_acks', pending[-6:])
         parent().store('last_frame_receive', time.perf_counter())
+        if parent().fetch('server_backend', '') == 'waypoint':
+            parent().store('world_phase', 'streaming')
         
         # Adaptive Flow Control: unlock sending immediately upon frame receipt
         parent().store('can_send', True)
@@ -665,7 +675,9 @@ def onFrameStart(frame):
             p_fps.val = '0.0 FPS'
         p_status = getattr(parent().par, 'Status', None)
         if p_status is not None and parent().fetch('server_ready', False):
-            p_status.val = 'Connected (Waiting for video)'
+            phase = parent().fetch('world_phase', None)
+            status = parent().fetch('world_status', '')
+            p_status.val = status if phase and phase != 'streaming' and status else 'Connected (Waiting for video)'
     if (ws and ws.par.active.eval() and parent().fetch('handshake_complete', False)
             and now - parent().fetch('last_ping_time', 0.0) >= 2.0):
         parent().store('last_ping_time', now)
@@ -908,6 +920,8 @@ def send_world_seed():
     for index in range(count):
         ws.sendBinary(b'FRM:' + bytes([frame_id, index, count]) + data[index*4096:(index+1)*4096])
     parent().par.Status = 'World seed sent; first generation may compile for several minutes'
+    parent().store('world_phase', 'seeding')
+    parent().store('world_status', 'World seed sent; waiting for server confirmation')
 
 
 def save_snapshot():
