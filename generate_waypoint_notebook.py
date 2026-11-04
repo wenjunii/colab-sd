@@ -18,6 +18,8 @@ No Scope service or package is required. Model: Apache-2.0. Inference library: G
 
 Run the cells in order in a **fresh GPU runtime**. This notebook installs into a separate
 environment; it does not install StreamDiffusion or replace the notebook kernel packages.
+Setup creates the environment without ensurepip, then bootstraps pip into that interpreter.
+Rerunning setup repairs a partial pip-less environment while retaining installed packages.
 Do not run both GPU servers on the same GPU simultaneously.
 
 1. Optional Drive storage reuses pinned model and VAE weights on later runtimes.
@@ -56,6 +58,7 @@ The runtime documents INT8 support for Ampere; this notebook does not promise an
     ''')
     setup = dedent('''\
         # @title Step 2: Install isolated Waypoint runtime and choose storage
+        # @markdown Repairs partial environment setup without ensurepip; keeps existing model caches.
         USE_GOOGLE_DRIVE = False # @param {type:"boolean"}
         DRIVE_MODEL_FOLDER = "StreamDiffusion/waypoint-models" # @param {type:"string"}
 
