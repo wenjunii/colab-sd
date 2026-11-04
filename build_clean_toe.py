@@ -316,7 +316,7 @@ def onReceiveText(dat, rowIndex, message):
             if seed_info is not None:
                 seed_info.val = ('Prompt seeds not enabled' if not data.get('world_prompt_seeding') else
                                  str(data.get('world_seed_error')) if data.get('world_seed_error') else
-                                 f"SD-Turbo seeds: {data['world_seed_count']} | last {data.get('world_seed_ms', 0):.0f} ms")
+                                 f"{data.get('world_seed_model_label') or 'SD-Turbo'} seeds: {data['world_seed_count']} | last {data.get('world_seed_ms', 0):.0f} ms")
             if data.get('world_seed_error'):
                 auto_par = getattr(parent().par, 'Worldautoseed', None)
                 if auto_par is not None:
@@ -1092,7 +1092,7 @@ pages 3 StreamDiffusion World Krea
 772804868 Worldbuttons "World Button Codes (comma separated)" 1 1 0 0 1 1 1 2 0 "" "" World 3
 772804865 Worldmousex "Camera X per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 4
 772804865 Worldmousey "Camera Y per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 5
-772804879 Worldseedsource "World Seed Source" 1 1 0 0 1 1 1 2 0 "" "" World 4097 2 input "Input Image" sdturbo "SD-Turbo (Prompt A/B)" 6
+772804879 Worldseedsource "World Seed Source" 1 1 0 0 1 1 1 2 0 "" "" World 4097 2 input "Input Image" sdturbo "Prompt Model (A/B)" 6
 772804867 Worldautoseed "Auto Reseed (scene cuts)" 1 1 0 0 1 1 1 2 0 "" "" World 7
 772804865 Worldseedinterval "Reseed Interval (seconds, 1-3600)" 1 1 0 0 1 1 1 2 0 "" "" World 8
 772804869 Worldpromptseed "Generate Seed from Prompt" 1 1 0 0 1 1 1 2 0 "" "" World 9
@@ -1148,7 +1148,7 @@ Worldmousey 67108928 0
 Worldseedsource 67108928 input
 Worldautoseed 67108928 on
 Worldseedinterval 67108928 5
-Worldseedinfo 67109184 "SD-Turbo seeds: --"
+Worldseedinfo 67109184 "Prompt model: --"
 Kreapaused 67108928 off
 Kreainfo 67109184 "Waiting for Krea"
 ?

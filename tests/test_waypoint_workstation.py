@@ -45,7 +45,7 @@ class WaypointWorkstationChecks(unittest.TestCase):
         self.assertFalse(workstation.DEFAULT_WAYPOINT_RUNTIME.is_relative_to(workstation.DEFAULT_RUNTIME))
         with patch.object(workstation, 'setup_waypoint') as world, patch.object(workstation, 'setup') as sd:
             self.assertEqual(workstation.main(['setup', '--backend', 'waypoint', '--prompt-seeds']), 0)
-            world.assert_called_once_with(workstation.DEFAULT_WAYPOINT_RUNTIME, True, None)
+            world.assert_called_once_with(workstation.DEFAULT_WAYPOINT_RUNTIME, True, None, prompt_seed_model='sd-turbo')
             sd.assert_not_called()
             self.assertEqual(workstation.main(['setup']), 0)
             sd.assert_called_once_with(workstation.DEFAULT_RUNTIME, 'cu130', workstation.TORCH_VERSION)

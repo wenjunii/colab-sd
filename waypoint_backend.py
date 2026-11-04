@@ -103,7 +103,10 @@ def validate_world_controls(data, current=WORLD_SIZE):
 
 class WaypointBackend:
     """Single-worker state: at most one four-frame batch, no unbounded prefetch."""
-    def __init__(self, engine, ctrl_type, torch_module, seed=42, seed_generator=None):
+    def __init__(self, engine, ctrl_type, torch_module, seed=42, seed_generator=None, prompt_seed_model='sd-turbo'):
+        from waypoint_setup import PROMPT_SEED_MODELS
+        if prompt_seed_model not in PROMPT_SEED_MODELS:
+            raise ValueError('Prompt seed model must be sd-turbo or sdxl-turbo')
         self.engine, self.ctrl_type, self.torch = engine, ctrl_type, torch_module
         self.frames = deque()
         self.seed_image = None
@@ -116,6 +119,8 @@ class WaypointBackend:
         self.batches = 0
         self.compile_profile = 'fast'
         self.seed_generator = seed_generator
+        self.prompt_seed_model = prompt_seed_model
+        self.prompt_seed_label = 'SDXL-Turbo' if prompt_seed_model == 'sdxl-turbo' else 'SD-Turbo'
         self.seed_source, self.auto_seed, self.seed_interval = 'input', True, 5.0
         self.prompt_a, self.prompt_b, self.blend = 'cinematic landscape, detailed', '', 0.0
         self.seed_count, self.seed_ms, self.seed_error = 0, 0.0, None
@@ -137,7 +142,7 @@ class WaypointBackend:
         labels = {
             'awaiting_seed': 'Connected; World > Seed World from Input',
             'seeding': 'Preparing world seed; compiling kernels if needed',
-            'seed_generation': 'SD-Turbo generating a new world seed',
+            'seed_generation': f'{self.prompt_seed_label} generating a new world seed',
             'ready': 'World seed prepared; waiting to generate',
             'first_batch': 'Generating first world batch; compiling kernels if needed',
             'streaming': 'World frames ready',
@@ -154,12 +159,17 @@ class WaypointBackend:
                 'world_compile_profile': self.compile_profile,
                 'world_seed_required': self.seed_image is None,
                 'world_prompt_seeding': self.seed_generator is not None,
+                'world_seed_model': self.prompt_seed_model if self.seed_generator is not None else None,
+                'world_seed_model_label': self.prompt_seed_label if self.seed_generator is not None else None,
                 'world_seed_source': self.seed_source, 'world_auto_seed': self.auto_seed,
                 'world_seed_interval': self.seed_interval, 'world_seed_count': self.seed_count,
                 'world_seed_ms': round(self.seed_ms, 1), 'world_seed_error': self.seed_error}
 
     @classmethod
-    def load(cls, quant='intw8a8', compile_profile='fast', prompt_seeds=False):
+    def load(cls, quant='intw8a8', compile_profile='fast', prompt_seeds=False, prompt_seed_model='sd-turbo'):
+        from waypoint_setup import PROMPT_SEED_MODELS
+        if prompt_seed_model not in PROMPT_SEED_MODELS:
+            raise ValueError('Prompt seed model must be sd-turbo or sdxl-turbo')
         import torch
         from huggingface_hub import snapshot_download
         from world_engine import WorldEngine, CtrlInput
@@ -187,8 +197,8 @@ class WaypointBackend:
         seed_generator = None
         if prompt_seeds:
             from waypoint_seed import PromptSeedGenerator
-            seed_generator = PromptSeedGenerator.load()
-        backend = cls(engine, CtrlInput, torch, seed_generator=seed_generator)
+            seed_generator = PromptSeedGenerator.load(prompt_seed_model)
+        backend = cls(engine, CtrlInput, torch, seed_generator=seed_generator, prompt_seed_model=prompt_seed_model)
         backend.compile_profile = compile_profile
         logger.info('Waypoint compile profile: %s (native 1280 x 720, %s)', compile_profile, quant)
         return backend
@@ -206,7 +216,7 @@ class WaypointBackend:
         clean = validate_world_controls(data)
         source = clean.get('world_seed_source', self.seed_source)
         if source == 'sdturbo' and self.seed_generator is None:
-            raise ValueError('Enable SD-Turbo prompt seeds in Waypoint server setup first')
+            raise ValueError('Enable prompt seeds in Waypoint server setup first')
         source_changed = source != self.seed_source
         interval_changed = clean.get('world_seed_interval', self.seed_interval) != self.seed_interval
         changed = any(clean.get(key, old) != old for key, old in (
