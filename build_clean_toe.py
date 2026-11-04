@@ -10,9 +10,10 @@ from bridge_protocol import OUTPUT_PRESETS
 
 
 def resolution_parameter():
-    options = ' '.join(f'{value} "{label}"' for value, label, _, _ in OUTPUT_PRESETS)
+    presets = (*OUTPUT_PRESETS, ('1280x720', '1280 x 720 (Waypoint only)', 1280, 720))
+    options = ' '.join(f'{value} "{label}"' for value, label, _, _ in presets)
     return ('772804879 Resolution "Output Resolution / Ratio" 1 1 0 0 1 1 1 2 0 "" "" '
-            f'StreamDiffusion 4097 {len(OUTPUT_PRESETS)} {options} 5')
+            f'StreamDiffusion 4097 {len(presets)} {options} 5')
 
 SCRIPT_RECEIVER_CODE = '''import cv2
 import numpy as np
@@ -227,13 +228,21 @@ def onReceiveText(dat, rowIndex, message):
                 if p_resolution is not None:
                     p_resolution.val = str(width) if width == height else f"{width}x{height}"
                 p_mode = getattr(parent().par, 'Mode', None)
-                if p_mode is not None and data.get('mode') in ('txt2img', 'img2img'):
+                if p_mode is not None and data.get('mode') in ('txt2img', 'img2img', 'world'):
                     p_mode.val = data['mode']
             print('[StreamDiffusion]', last_error)
             if data.get('code') == 'unauthorized':
                 parent().par.Connect = False
         elif msg_type in ('welcome', 'configured'):
             actual = (data.get('mode'), data.get('width'), data.get('height'))
+            if msg_type == 'welcome':
+                supported = data.get('supported_modes', ['txt2img', 'img2img'])
+                parent().store('supported_modes', supported)
+                parent().store('server_backend', data.get('backend', 'sd-turbo'))
+                mode_par = getattr(parent().par, 'Mode', None)
+                if mode_par is not None and (data.get('backend') == 'waypoint' or mode_par.eval() not in supported):
+                    mode_par.val = data.get('mode', supported[0])
+                    parent().store('requested_configuration', actual)
             requested = parent().fetch('requested_configuration', actual)
             ready = bool(data.get('ready', True)) and actual == requested
             parent().store('server_ready', ready)
@@ -277,6 +286,8 @@ def onReceiveText(dat, rowIndex, message):
                 p_temp.val = temp
             eng = data.get('engine', 'PyTorch')
             print(f"[StreamDiffusion] Handshake received. Engine: {eng}, VRAM: {vram}, Temp: {temp}")
+            if data.get('world_seed_required'):
+                parent().par.Status = 'Connected; seed a scene image on the World page'
             
         if 'status' in data:
             p_status = getattr(parent().par, 'Status', None)
@@ -404,11 +415,14 @@ def output_size():
     return int(dimensions[0]), int(dimensions[-1])
 
 
-def send_control(force=False, strength_override=None):
+def send_control(force=False, strength_override=None, world_reset=False):
     if not parent().fetch('handshake_complete', True):
         return
     p = parent().par
-    mode = 'img2img' if getattr(p, 'Mode', None) and p.Mode.eval() == 'img2img' else 'txt2img'
+    mode = str(p.Mode.eval()) if getattr(p, 'Mode', None) else 'txt2img'
+    if mode not in parent().fetch('supported_modes', ['txt2img', 'img2img']):
+        p.Status = 'Selected mode needs its matching Colab notebook/server'
+        return
     
     prompt_a = str(getattr(p, 'Prompta', getattr(p, 'Prompt', '')))
     prompt_b = str(getattr(p, 'Promptb', ''))
@@ -440,6 +454,19 @@ def send_control(force=False, strength_override=None):
         'width': width,
         'height': height,
     }
+    if mode == 'world':
+        try:
+            codes = str(p.Worldbuttons.eval()).replace(',', ' ').split()
+            buttons = [int(code) for code in codes]
+            if len(buttons) > 32 or any(not 0 <= code <= 255 for code in buttons):
+                raise ValueError()
+        except ValueError:
+            p.Status = 'World Button Codes: use up to 32 integers from 0 to 255'
+            return
+        msg = {'type': 'control', 'mode': 'world', 'width': width, 'height': height,
+               'world_buttons': buttons, 'world_mouse_x': float(p.Worldmousex.eval()),
+               'world_mouse_y': float(p.Worldmousey.eval()), 'world_paused': bool(p.Worldpaused.eval()),
+               'world_reset': bool(world_reset), 'seed': seed_val}
     ws = op('websocket1')
     if ws and ws.par.active.eval():
         try:
@@ -515,6 +542,9 @@ def onExit():
     return
 
 def handle_audio_reactivity(now):
+    mode = getattr(parent().par, 'Mode', None)
+    if mode is not None and mode.eval() == 'world':
+        return
     global last_audio_send_time, last_audio_beat_time, audio_armed
     p = parent().par
     p_aud = getattr(p, 'Audiorx', None)
@@ -799,9 +829,11 @@ def onValueChange(par, prev):
             fixed = str(width) if width == height else f'{width}x{height}'
             if str(par.eval()) != fixed:
                 par.val = fixed
-                parent().par.Status = f'TensorRT fixed at {width} x {height}; select startup size in server launcher'
+                parent().par.Status = f'Backend fixed at {width} x {height}; select startup size in server launcher'
         elif par.name in ['Prompta', 'Promptb', 'Promptblend', 'Negprompt', 'Prompt', 'Mode', 'Source', 'Strength', 'Seed', 'Resolution']:
             # Coalesce simultaneous CHOP/slider changes into one control packet.
+            parent().store('control_pending', True)
+        elif par.name in ('Worldbuttons', 'Worldmousex', 'Worldmousey', 'Worldpaused'):
             parent().store('control_pending', True)
         elif par.name == 'Displaymode':
             rec = op('script_receiver')
@@ -820,7 +852,13 @@ def onValueChange(par, prev):
 
 def onPulse(par):
     try:
-        if par.name == 'Randomseed':
+        if par.name == 'Worldseed':
+            send_world_seed()
+        elif par.name == 'Worldreset':
+            if str(parent().par.Mode.eval()) == 'world':
+                cb = op('websocket1_callbacks')
+                cb.module.send_control(force=True, world_reset=True)
+        elif par.name == 'Randomseed':
             p_seed = getattr(parent().par, 'Seed', None)
             if p_seed is not None:
                 p_seed.val = random.randint(1, 999999)
@@ -834,6 +872,43 @@ def onPulse(par):
             save_snapshot()
     except Exception as e:
         print('[StreamDiffusion] parexec onPulse error:', e)
+
+def send_world_seed():
+    if (parent().fetch('server_backend', '') != 'waypoint'
+            or not parent().fetch('server_ready', False)):
+        parent().par.Status = 'Connect the Waypoint notebook before seeding a world'
+        return
+    cam, ws = op('null_cam'), op('websocket1')
+    if not cam or not ws or not ws.par.active.eval():
+        return
+    cam.cook(force=True)
+    arr = cam.numpyArray()
+    if arr is None:
+        parent().par.Status = 'Choose an Input Source containing a scene image'
+        return
+    rgb = (np.clip(arr[::-1, :, :3], 0, 1) * 255).astype(np.uint8)
+    bgr = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2BGR)
+    # Bound capture and transmission while preserving the native source ratio.
+    height, width = bgr.shape[:2]
+    scale = min(1.0, 1280.0 / max(width, height))
+    if scale < 1:
+        bgr = cv2.resize(bgr, (round(width * scale), round(height * scale)))
+    for quality in (90, 75, 55, 35):
+        ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if ok and len(buf) <= 512 * 1024:
+            break
+    else:
+        parent().par.Status = 'Seed image could not fit the upload limit'
+        return
+    data = buf.tobytes()
+    frame_id = (parent().fetch('world_seed_id', 0) + 1) % 256
+    parent().store('world_seed_id', frame_id)
+    count = (len(data) + 4095) // 4096
+    ws.sendText(json.dumps({'type': 'world_seed'}))
+    for index in range(count):
+        ws.sendBinary(b'FRM:' + bytes([frame_id, index, count]) + data[index*4096:(index+1)*4096])
+    parent().par.Status = 'World seed sent; first generation may compile for several minutes'
+
 
 def save_snapshot():
     try:
@@ -872,6 +947,9 @@ def save_snapshot():
             'strength': float(getattr(p, 'Strength', 0.6)),
             'seed': int(getattr(p, 'Seed', 42)),
             'mode': str(getattr(p, 'Mode', 'txt2img')),
+            'backend': parent().fetch('server_backend', 'sd-turbo'),
+            'world_buttons': str(getattr(p, 'Worldbuttons', '')),
+            'world_camera_per_step': [float(getattr(p, 'Worldmousex', 0)), float(getattr(p, 'Worldmousey', 0))],
             'engine': str(getattr(p, 'Engine', '')),
             'fps': str(getattr(p, 'Fps', '')),
             'inference_time': str(getattr(p, 'Gputime', '')),
@@ -900,12 +978,12 @@ def save_snapshot():
 '''
 
 CPARM_CONTENT = f'''?
-pages 1 StreamDiffusion
+pages 2 StreamDiffusion World
 772804879 Serverlocation "Server Location" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 colab "Google Colab" workstation "RTX Workstation (Windows / Linux)" 0
 772804868 Serverurl "Server WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
 772804868 Accesstoken "Workstation Access Token" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 2
 772804867 Connect "Connect to Server" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 3
-772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 txt2img "Text-to-Video" img2img "Image / Noise to Image" 4
+772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 txt2img "Text-to-Video" img2img "Image / Noise to Image" world "World Model (Waypoint)" 4
 {resolution_parameter()}
 772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 6
 772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 7
@@ -939,6 +1017,12 @@ pages 1 StreamDiffusion
 772804868 Deliverytime "Video Delivery RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 35
 772804868 Cooktime "Display Cook" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 36
 772804868 Streamwait "Video Buffer Wait" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 37
+772804869 Worldseed "Seed World from Input" 1 1 0 0 1 1 1 2 0 "" "" World 0
+772804869 Worldreset "Reset World (reuse seed)" 1 1 0 0 1 1 1 2 0 "" "" World 1
+772804867 Worldpaused "Pause World" 1 1 0 0 1 1 1 2 0 "" "" World 2
+772804868 Worldbuttons "World Button Codes (comma separated)" 1 1 0 0 1 1 1 2 0 "" "" World 3
+772804865 Worldmousex "Camera X per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 4
+772804865 Worldmousey "Camera Y per Step (-1 to 1)" 1 1 0 0 1 1 1 2 0 "" "" World 5
 ?
 '''
 
@@ -979,6 +1063,10 @@ Framesize 67109184 "-- KB"
 Deliverytime 67109184 "-- ms"
 Cooktime 67109184 "-- ms"
 Streamwait 67109184 "-- ms"
+Worldpaused 67108928 off
+Worldbuttons 67108928 ""
+Worldmousex 67108928 0
+Worldmousey 67108928 0
 ?
 '''
 
@@ -1081,7 +1169,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'latency_callbacks.n').write_text(
         'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh'
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')

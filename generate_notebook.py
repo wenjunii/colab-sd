@@ -145,3 +145,5 @@ if __name__ == '__main__':
     arguments = parser.parse_args()
     result = generate_notebook(check=arguments.check)
     print(('Verified ' if arguments.check else 'Generated ') + str(result))
+    from generate_waypoint_notebook import generate_notebook as generate_waypoint
+    print(('Verified ' if arguments.check else 'Generated ') + str(generate_waypoint(check=arguments.check)))

@@ -4,51 +4,54 @@ import traceback
 import gc
 import hmac
 
-# 1. Compatibility shims for huggingface_hub
-import huggingface_hub
-import huggingface_hub.constants
+is_world_backend = os.environ.get('BRIDGE_BACKEND', 'sd-turbo') == 'waypoint'
 
-if not hasattr(huggingface_hub.constants, 'hf_cache_home'):
-    huggingface_hub.constants.hf_cache_home = getattr(
-        huggingface_hub.constants, 'HF_HOME', os.path.expanduser('~/.cache/huggingface')
-    )
+if not is_world_backend:
+    # 1. Compatibility shims for huggingface_hub
+    import huggingface_hub
+    import huggingface_hub.constants
 
-if not hasattr(huggingface_hub, 'HfFolder'):
-    class HfFolder:
-        @classmethod
-        def get_token(cls):
-            try:
-                from huggingface_hub import get_token
-                return get_token()
-            except Exception:
-                return None
-        @classmethod
-        def save_token(cls, token):
+    if not hasattr(huggingface_hub.constants, 'hf_cache_home'):
+        huggingface_hub.constants.hf_cache_home = getattr(
+            huggingface_hub.constants, 'HF_HOME', os.path.expanduser('~/.cache/huggingface')
+        )
+
+    if not hasattr(huggingface_hub, 'HfFolder'):
+        class HfFolder:
+            @classmethod
+            def get_token(cls):
+                try:
+                    from huggingface_hub import get_token
+                    return get_token()
+                except Exception:
+                    return None
+            @classmethod
+            def save_token(cls, token):
+                pass
+        huggingface_hub.HfFolder = HfFolder
+
+    if not hasattr(huggingface_hub, 'cached_download'):
+        from huggingface_hub import hf_hub_download
+        huggingface_hub.cached_download = hf_hub_download
+
+    # 2. Compatibility shims for transformers
+    import transformers
+    import transformers.utils
+
+    if not hasattr(transformers.utils, 'FLAX_WEIGHTS_NAME'):
+        transformers.utils.FLAX_WEIGHTS_NAME = 'flax_model.msgpack'
+    if not hasattr(transformers.utils, 'FLAX_WEIGHTS_INDEX_NAME'):
+        transformers.utils.FLAX_WEIGHTS_INDEX_NAME = 'flax_model.msgpack.index.json'
+
+    if not hasattr(transformers, 'EncoderDecoderCache'):
+        class EncoderDecoderCache:
             pass
-    huggingface_hub.HfFolder = HfFolder
-
-if not hasattr(huggingface_hub, 'cached_download'):
-    from huggingface_hub import hf_hub_download
-    huggingface_hub.cached_download = hf_hub_download
-
-# 2. Compatibility shims for transformers
-import transformers
-import transformers.utils
-
-if not hasattr(transformers.utils, 'FLAX_WEIGHTS_NAME'):
-    transformers.utils.FLAX_WEIGHTS_NAME = 'flax_model.msgpack'
-if not hasattr(transformers.utils, 'FLAX_WEIGHTS_INDEX_NAME'):
-    transformers.utils.FLAX_WEIGHTS_INDEX_NAME = 'flax_model.msgpack.index.json'
-
-if not hasattr(transformers, 'EncoderDecoderCache'):
-    class EncoderDecoderCache:
-        pass
-    transformers.EncoderDecoderCache = EncoderDecoderCache
-    try:
-        import transformers.cache_utils
-        transformers.cache_utils.EncoderDecoderCache = EncoderDecoderCache
-    except Exception:
-        pass
+        transformers.EncoderDecoderCache = EncoderDecoderCache
+        try:
+            import transformers.cache_utils
+            transformers.cache_utils.EncoderDecoderCache = EncoderDecoderCache
+        except Exception:
+            pass
 
 import time
 import asyncio
@@ -116,6 +119,7 @@ applied_prompt_state = None
 telemetry_lock = threading.Lock()
 telemetry_cache = (0.0, "--", "--")
 active_client = None
+world_backend = None
 pipeline_revision = 0
 last_pipeline_error = None
 jpeg_quality_hints = {}
@@ -127,6 +131,8 @@ img2img_engine = "PyTorch (FP16)"
 
 
 def engine_for_mode(mode=None):
+    if is_world_backend:
+        return 'Waypoint (INT8)' if os.environ.get('WAYPOINT_QUANT', 'intw8a8') == 'intw8a8' else 'Waypoint (BF16)'
     if enable_tensorrt and not pipeline_ready:
         return 'TensorRT (Unavailable)' if last_pipeline_error else 'TensorRT (Preparing)'
     return img2img_engine if (mode or current_mode) == "img2img" else active_engine
@@ -140,18 +146,30 @@ current_neg_prompt = "blurry, low quality, distorted, watermark"
 current_mode = "txt2img"
 current_seed = 42
 current_strength = 0.6
-output_width, output_height = resolution({'width': int(os.environ.get('BRIDGE_INITIAL_WIDTH', '512')),
-                                         'height': int(os.environ.get('BRIDGE_INITIAL_HEIGHT', '512'))})
+output_width, output_height = ((1280, 720) if is_world_backend else
+    resolution({'width': int(os.environ.get('BRIDGE_INITIAL_WIDTH', '512')),
+                'height': int(os.environ.get('BRIDGE_INITIAL_HEIGHT', '512'))}))
 output_resolutions = OUTPUT_RESOLUTIONS
+if is_world_backend:
+    current_mode = 'world'
 allow_tensorrt_resize = os.environ.get('BRIDGE_TRT_ALLOW_RESIZE', '0') == '1'
 
 
 def resolution_locked():
-    return enable_tensorrt and not allow_tensorrt_resize
+    return is_world_backend or (enable_tensorrt and not allow_tensorrt_resize)
 
 
 def requested_resolution(data):
+    if is_world_backend:
+        return (1280, 720)
     return resolution(data, (output_width, output_height))
+
+
+def validated_controls(data, current):
+    if is_world_backend:
+        from waypoint_backend import validate_world_controls
+        return validate_world_controls(data, current)
+    return validate_controls(data, current)
 
 def set_seed(s):
     torch.manual_seed(s)
@@ -292,6 +310,16 @@ def run_model_inference(input_image=None, mode=None):
 def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
     """Decode, infer, and encode on the worker; return complete frame timings."""
     started = time.perf_counter()
+    if is_world_backend:
+        if frame_bytes is not None:
+            world_backend.set_seed_image(frame_bytes)
+        result = world_backend.next_frame()
+        if result is None:
+            return None
+        out_bgr, batch_ms = result
+        jpg = compress_frame(out_bgr, max_frame_bytes, allow_oversize=True)
+        # The GPU readout is a four-frame batch duration, not single-frame latency.
+        return jpg, batch_ms, (time.perf_counter() - started) * 1000
     input_image = None
     if frame_bytes is not None:
         in_bgr = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
@@ -322,6 +350,14 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
 def apply_controls(data):
     """Apply an entire update between inference calls on the same worker."""
     global current_mode, current_seed, output_width, output_height, last_pipeline_error, pipeline_ready
+    global pipeline_revision
+    if is_world_backend:
+        data = validated_controls(data, (output_width, output_height))
+        world_backend.configure(data)
+        current_seed = world_backend.seed
+        if data.get('world_reset'):
+            pipeline_revision += 1
+        return
     data = validate_controls(data, (output_width, output_height))
     width, height = requested_resolution(data)
     if resolution_locked() and (width, height) != (output_width, output_height):
@@ -441,7 +477,17 @@ def create_txt2img_pipeline():
 
 def load_pipeline():
     global stream_txt2img, stream_img2img, pipeline_ready, active_engine, applied_prompt_state
-    global pipeline_revision, img2img_engine
+    global pipeline_revision, img2img_engine, world_backend
+    if is_world_backend:
+        if enable_tensorrt:
+            raise RuntimeError('Waypoint uses its own INT8/BF16 runtime; disable TensorRT')
+        from waypoint_backend import WaypointBackend
+        pipeline_ready = False
+        world_backend = WaypointBackend.load(os.environ.get('WAYPOINT_QUANT', 'intw8a8'))
+        pipeline_revision += 1
+        pipeline_ready = True
+        print('>>> Waypoint loaded. Seed an image from TouchDesigner; first generation compiles kernels.', flush=True)
+        return
     if StreamDiffusionWrapper is None:
         raise RuntimeError("StreamDiffusion is not installed. Run Colab setup or workstation.py setup first.")
     pipeline_revision += 1
@@ -576,7 +622,8 @@ def health():
         "width": output_width, "height": output_height,
         "client_connected": active_client is not None,
         "last_error": last_pipeline_error,
-        "requested_engine": "TensorRT" if enable_tensorrt else "PyTorch (FP16)",
+        "requested_engine": engine_for_mode() if is_world_backend else "TensorRT" if enable_tensorrt else "PyTorch (FP16)",
+        "backend": 'waypoint' if is_world_backend else 'sd-turbo',
         "session_id": os.environ.get('BRIDGE_SESSION_ID'),
         "authentication_required": bool(access_token),
         "resolution_locked": resolution_locked(),
@@ -586,9 +633,11 @@ def health():
 def configuration_error(code):
     """Public status contains no internal exception text or stack information."""
     if code == 'resolution_locked':
-        status = f'TensorRT is fixed at {output_width} x {output_height}; change startup resolution and restart'
+        status = f'Output fixed at {output_width} x {output_height}; select the matching backend and startup size'
     elif code == "invalid_control":
-        status = "Invalid controls: check output preset, mode, seed, strength, and blend values"
+        status = "Invalid controls: check backend, output size, and control values"
+    elif is_world_backend:
+        status = 'World configuration failed; see server logs, then reset or reseed the world'
     elif pipeline_ready:
         status = "Configuration failed; previous settings restored. See server logs for details"
     else:
@@ -670,9 +719,10 @@ async def websocket_stream_endpoint(websocket: WebSocket):
     control_available = asyncio.Event()
     pending_frame = None
     pending_control = {}
-    assembler = FrameAssembler()
+    assembler = FrameAssembler(timeout=15.0 if is_world_backend else 1.0)
     frame_counter = 0
     latest_stats = {}
+    world_seed_until = 0.0
 
     async def send_json(data):
         async with send_lock:
@@ -732,7 +782,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             control_available.clear()
             data, pending_control = pending_control, {}
             try:
-                data = validate_controls(data, (output_width, output_height))
+                data = validated_controls(data, (output_width, output_height))
                 width, height = requested_resolution(data)
                 if resolution_locked() and (width, height) != (output_width, output_height):
                     await send_json(configuration_error('resolution_locked'))
@@ -750,7 +800,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                  "width": output_width, "height": output_height, "engine": engine_for_mode(),
                                  "ready": pipeline_ready, "mode": current_mode,
                                  'resolution_locked': resolution_locked()})
-                if current_mode != "img2img":
+                if current_mode not in ('img2img', 'world'):
                     pending_frame = None
                     frame_available.clear()
                     assembler.clear()
@@ -777,6 +827,18 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     await asyncio.sleep(0.01)
                     continue
 
+                if mode == 'world':
+                    # Only the updated client understands the world-mode protocol.
+                    # Wait for its ACK negotiation before starting a cached world.
+                    if not ack_enabled:
+                        await asyncio.sleep(0.02)
+                        continue
+                    if pending_frame is not None:
+                        frame_bytes, pending_frame = pending_frame, None
+                    elif not world_backend.can_generate:
+                        await asyncio.sleep(0.02)
+                        continue
+
                 if not pipeline_ready or current_mode != mode:
                     continue
                 credit_ms = await wait_for_frame_credit()
@@ -802,7 +864,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     if frame_count % 100 == 1:
                         logger.info("%s: frame #%d (inference %.1fms, processing %.1fms, %d bytes)",
                                     mode, frame_count, inf_ms, process_ms, len(jpg_bytes))
-                if mode == "txt2img":
+                if mode in ('txt2img', 'world'):
                     await asyncio.sleep(max(0.0, 1.0 / max_stream_fps - (time.perf_counter() - started)))
             except (WebSocketDisconnect, RuntimeError, OSError):
                 logger.exception("Streaming stopped in %s", mode)
@@ -829,6 +891,9 @@ async def websocket_stream_endpoint(websocket: WebSocket):
 
     tasks = []
     try:
+        if is_world_backend:
+            # Queue behind any last GPU call from the previous controller.
+            await loop.run_in_executor(model_executor, world_backend.release_controls)
         vram, temp = await loop.run_in_executor(None, get_gpu_telemetry)
         await send_json({
             "type": "welcome", "message": "StreamDiffusion server connected",
@@ -840,8 +905,13 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             "vram": vram, "temp": temp,
             'resolution_locked': resolution_locked(), 'latency_probe': True, 'frame_ack': True,
             'video_quality_profiles': list(VIDEO_QUALITY_LIMITS),
+            'backend': 'waypoint' if is_world_backend else 'sd-turbo',
+            'supported_modes': ['world'] if is_world_backend else ['txt2img', 'img2img'],
+            'world_seed_required': is_world_backend and world_backend.seed_image is None,
+            'inference_batch_frames': 4 if is_world_backend else 1,
         })
-        tasks = [asyncio.create_task(supervise(generation_loop(mode))) for mode in ("txt2img", "img2img")]
+        modes = ('world',) if is_world_backend else ('txt2img', 'img2img')
+        tasks = [asyncio.create_task(supervise(generation_loop(mode))) for mode in modes]
         tasks.append(asyncio.create_task(supervise(telemetry_loop())))
         tasks.append(asyncio.create_task(supervise(control_loop())))
         while not stop_event.is_set():
@@ -855,6 +925,9 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         continue
                     if data.get("type") == "ping":
                         await send_json({"type": "pong", "sent_at": data.get("sent_at")})
+                    elif data.get('type') == 'world_seed' and is_world_backend:
+                        assembler.clear()
+                        world_seed_until = time.monotonic() + 15
                     elif data.get('type') == 'client_options':
                         quality = data.get('video_quality', video_quality)
                         if quality not in VIDEO_QUALITY_LIMITS:
@@ -884,12 +957,16 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     ):
                         # Merge rapid slider/audio changes while the worker is
                         # busy; the latest value of each control wins.
+                        reset_pending = pending_control.get('world_reset') is True
                         pending_control.update(data)
+                        if is_world_backend and reset_pending:
+                            pending_control['world_reset'] = True
                         control_available.set()
                 except (ValueError, TypeError):
                     await send_json({"type": "error", "code": "invalid_message",
                                      "status": "Send a valid JSON control object"})
-            elif message.get("bytes") is not None and pipeline_ready and current_mode == "img2img":
+            elif (message.get("bytes") is not None and pipeline_ready
+                  and (current_mode == 'img2img' or (is_world_backend and time.monotonic() < world_seed_until))):
                 raw = message["bytes"]
                 try:
                     frame_bytes = assembler.feed(raw)
@@ -897,6 +974,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     logger.debug("Dropped invalid input frame: %s", exc)
                     continue
                 if frame_bytes:
+                    world_seed_until = 0.0
                     # Only one pending input: replace stale watchdog/recovery frames.
                     # Receiving continues while the worker is busy with inference.
                     pending_frame = frame_bytes
@@ -910,6 +988,9 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if is_world_backend:
+            # Await queued model work before releasing controller ownership.
+            await loop.run_in_executor(model_executor, world_backend.release_controls)
         if active_client is websocket:
             active_client = None
 
