@@ -35,6 +35,16 @@ The world-mode controls, seed uploads, delivery credit handling and reconnect li
 
 Both models share the existing worker, controller slot, and optional token authentication gates. Seed generation waits for output credit and is bounded to one reseed at a batch boundary; missed timer ticks do not accumulate. An automatic seed failure stops automatic retries. The Colab notebook defaults to a blank token, as does the SD-Turbo notebook; anyone with its tunnel URL can attempt to connect.
 
+## Optional Krea HF modular runtime
+
+The commercial-use requirement excludes the CC-BY-NC-SA Krea GitHub application. The Krea notebook instead targets the separate official HF release at revision `9a2ceea280e5d584c6a28d384a9c19e38c810f8c`, whose model card declares Apache-2.0; modular blocks retain their Apache-2.0 headers and transformer files retain upstream attribution. Supporting Wan components use revision `38ec498cb3208fb688890f8cc7e94ede2cbd7f68` (Apache-2.0). See the README's source/license links. A model-card declaration does not change the separately licensed GitHub application or establish terms for unrelated distributions.
+
+This backend deliberately executes custom model Python. `krea_assets.py` downloads only named source/config files and safetensors shards, verifies the 14 source/config SHA-256 hashes, and only then permits `trust_remote_code=True` for those local files. Wan components load locally with remote-code trust disabled and safetensors required for weights. The browser/TD client cannot choose a model, source revision, code URL, or runtime path. Cached model files and private module caches must remain trusted; checksums here verify the recorded code version, not a complete supply-chain audit of weights or installed dependencies. No unpinned attention kernels are downloaded.
+
+The installer uses its own Python environment with Torch 2.13.0 CUDA 13, Diffusers 0.42.1, Transformers 5.10.1, Hub 1.33.0, Accelerate 1.12.0, bitsandbytes 0.50.2 and PEFT 0.21.2. Remaining transitives follow those constraints. `pip check` and CUDA/VRAM/import preflight do not constitute a GPU dependency vulnerability audit or proof of inference correctness. CI imports pinned custom modules in disposable CPU scratch without weights/CUDA packages; quantized loading and A100 behavior remain unverified. The SD-Turbo/Waypoint stacks are not replaced.
+
+Krea reuses the same worker, single-controller slot, token gate and ACK-limited delivery as the other modes. It waits for a controller configuration and ACK negotiation before inference, queues at most one decoded chunk, and stops generation retries after failure. Clip reset/reconnect cleanup runs behind owned GPU work. Its Colab tunnel has no token by default, matching the other notebooks. Setup refuses an already occupied bridge port and does not terminate other servers.
+
 ## Workstation access
 
 `workstation.py setup` creates its own environment rather than modifying system Python. It reuses the same legacy model dependency pins listed above, with a selected CUDA Torch wheel and patched Pillow/filelock/setuptools. The CPU dependency audit does not establish security of this GPU environment.

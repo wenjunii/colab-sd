@@ -10,7 +10,8 @@ from bridge_protocol import OUTPUT_PRESETS
 
 
 def resolution_parameter():
-    presets = (*OUTPUT_PRESETS, ('1280x720', '1280 x 720 (Waypoint only)', 1280, 720))
+    presets = (*OUTPUT_PRESETS, ('1280x720', '1280 x 720 (Waypoint only)', 1280, 720),
+               ('832x480', '832 x 480 (Krea only)', 832, 480))
     options = ' '.join(f'{value} "{label}"' for value, label, _, _ in presets)
     return ('772804879 Resolution "Output Resolution / Ratio" 1 1 0 0 1 1 1 2 0 "" "" '
             f'StreamDiffusion 4097 {len(presets)} {options} 5')
@@ -230,7 +231,7 @@ def onReceiveText(dat, rowIndex, message):
                 if p_resolution is not None:
                     p_resolution.val = str(width) if width == height else f"{width}x{height}"
                 p_mode = getattr(parent().par, 'Mode', None)
-                if p_mode is not None and data.get('mode') in ('txt2img', 'img2img', 'world'):
+                if p_mode is not None and data.get('mode') in ('txt2img', 'img2img', 'world', 'krea'):
                     p_mode.val = data['mode']
             print('[StreamDiffusion]', last_error)
             if data.get('code') == 'unauthorized':
@@ -302,6 +303,10 @@ def onReceiveText(dat, rowIndex, message):
             parent().store('world_status', str(data.get('world_status', '')))
             if data['world_phase'] != 'streaming' and data.get('world_status'):
                 parent().par.Status = data['world_status']
+        if 'krea_block' in data:
+            info = getattr(parent().par, 'Kreainfo', None)
+            if info is not None:
+                info.val = f"Clip {data.get('krea_clip', 0) + 1}, chunk {data['krea_block']}/{data.get('krea_clip_blocks', 64)}"
         if 'world_seed_count' in data:
             seed_info = getattr(parent().par, 'Worldseedinfo', None)
             if seed_info is not None:
@@ -436,7 +441,7 @@ def output_size():
     return int(dimensions[0]), int(dimensions[-1])
 
 
-def send_control(force=False, strength_override=None, world_reset=False, world_reseed=False):
+def send_control(force=False, strength_override=None, world_reset=False, world_reseed=False, krea_reset=False):
     if not parent().fetch('handshake_complete', True):
         return
     p = parent().par
@@ -478,7 +483,11 @@ def send_control(force=False, strength_override=None, world_reset=False, world_r
         'width': width,
         'height': height,
     }
-    if mode == 'world':
+    if mode == 'krea':
+        msg = {'type': 'control', 'mode': 'krea', 'width': width, 'height': height,
+               'prompt_a': prompt_a, 'seed': seed_val,
+               'krea_paused': bool(parameter('Kreapaused', False)), 'krea_reset': bool(krea_reset)}
+    elif mode == 'world':
         try:
             codes = str(p.Worldbuttons.eval()).replace(',', ' ').split()
             buttons = [int(code) for code in codes]
@@ -580,7 +589,7 @@ def onExit():
 
 def handle_audio_reactivity(now):
     mode = getattr(parent().par, 'Mode', None)
-    if mode is not None and mode.eval() == 'world':
+    if mode is not None and mode.eval() in ('world', 'krea'):
         return
     global last_audio_send_time, last_audio_beat_time, audio_armed
     p = parent().par
@@ -873,7 +882,7 @@ def onValueChange(par, prev):
             # Coalesce simultaneous CHOP/slider changes into one control packet.
             parent().store('control_pending', True)
         elif par.name in ('Worldbuttons', 'Worldmousex', 'Worldmousey', 'Worldpaused',
-                          'Worldseedsource', 'Worldautoseed', 'Worldseedinterval'):
+                          'Worldseedsource', 'Worldautoseed', 'Worldseedinterval', 'Kreapaused'):
             parent().store('control_pending', True)
         elif par.name == 'Displaymode':
             rec = op('script_receiver')
@@ -892,7 +901,10 @@ def onValueChange(par, prev):
 
 def onPulse(par):
     try:
-        if par.name == 'Worldseed':
+        if par.name == 'Kreareset':
+            if str(parent().par.Mode.eval()) == 'krea':
+                op('websocket1_callbacks').module.send_control(force=True, krea_reset=True)
+        elif par.name == 'Worldseed':
             send_world_seed()
         elif par.name == 'Worldpromptseed':
             if str(parent().par.Mode.eval()) == 'world':
@@ -1029,12 +1041,12 @@ def save_snapshot():
 '''
 
 CPARM_CONTENT = f'''?
-pages 2 StreamDiffusion World
+pages 3 StreamDiffusion World Krea
 772804879 Serverlocation "Server Location" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 colab "Google Colab" workstation "RTX Workstation (Windows / Linux)" 0
 772804868 Serverurl "Server WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
 772804868 Accesstoken "Workstation Access Token" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 2
 772804867 Connect "Connect to Server" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 3
-772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 txt2img "Text-to-Video" img2img "Image / Noise to Image" world "World Model (Waypoint)" 4
+772804879 Mode "Generation Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 txt2img "Text-to-Video" img2img "Image / Noise to Image" world "World Model (Waypoint)" krea "Krea Realtime (Text-to-Video)" 4
 {resolution_parameter()}
 772804879 Source "Input Source" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 in1 "External Input (in1)" cam "Webcam (cam_in)" noise "Internal Noise" 6
 772804879 Displaymode "Display Mode" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 ai "AI Output Only" sidebyside "Side-by-Side (Input | Output)" wipe "Split Wipe (50/50)" input "Input Only" 7
@@ -1079,6 +1091,9 @@ pages 2 StreamDiffusion World
 772804865 Worldseedinterval "Reseed Interval (seconds, 1-3600)" 1 1 0 0 1 1 1 2 0 "" "" World 8
 772804869 Worldpromptseed "Generate Seed from Prompt" 1 1 0 0 1 1 1 2 0 "" "" World 9
 772804868 Worldseedinfo "Prompt Seed Status" 1 1 0 0 1 1 1 2 0 "" "" World 10
+772804867 Kreapaused "Pause Krea" 1 1 0 0 1 1 1 2 0 "" "" Krea 0
+772804869 Kreareset "Reset Krea Clip" 1 1 0 0 1 1 1 2 0 "" "" Krea 1
+772804868 Kreainfo "Krea Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" Krea 2
 ?
 '''
 
@@ -1127,6 +1142,8 @@ Worldseedsource 67108928 input
 Worldautoseed 67108928 on
 Worldseedinterval 67108928 5
 Worldseedinfo 67109184 "SD-Turbo seeds: --"
+Kreapaused 67108928 off
+Kreainfo 67109184 "Waiting for Krea"
 ?
 '''
 
@@ -1229,7 +1246,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'latency_callbacks.n').write_text(
         'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed'
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')

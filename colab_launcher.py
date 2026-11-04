@@ -21,10 +21,10 @@ class BridgeSession:
                  server_script='server.py', python_executable=None, cloudflared=None, access_token=None,
                  output_size=(512, 512), allow_tensorrt_resize=False, engine_cache=None, reuse_engines=True,
                  tunnel_protocol='auto', backend='sd-turbo'):
-        if backend not in ('sd-turbo', 'waypoint'):
-            raise ValueError('Backend must be sd-turbo or waypoint')
-        if backend == 'waypoint' and tensorrt:
-            raise ValueError('Waypoint uses INT8/BF16, not the SD-Turbo TensorRT engines')
+        if backend not in ('sd-turbo', 'waypoint', 'krea'):
+            raise ValueError('Backend must be sd-turbo, waypoint, or krea')
+        if backend != 'sd-turbo' and tensorrt:
+            raise ValueError('This backend uses its own runtime, not the SD-Turbo TensorRT engines')
         self.backend = backend
         if not math.isfinite(float(max_fps)) or not 1 <= float(max_fps) <= 120:
             raise ValueError('Maximum FPS must be between 1 and 120')
@@ -43,7 +43,8 @@ class BridgeSession:
         self.cloudflared = str(cloudflared or self.root / ('cloudflared.exe' if os.name == 'nt' else 'cloudflared'))
         self.access_token = access_token
         self.session_id = os.urandom(16).hex()
-        self.output_size = (1280, 720) if backend == 'waypoint' else resolution({'width': output_size[0], 'height': output_size[1]})
+        self.output_size = ((1280, 720) if backend == 'waypoint' else (832, 480) if backend == 'krea'
+                            else resolution({'width': output_size[0], 'height': output_size[1]}))
         self.allow_tensorrt_resize = bool(allow_tensorrt_resize)
         self.engine_cache = Path(engine_cache or self.root / 'engines/torch-tensorrt').resolve()
         self.reuse_engines = bool(reuse_engines)
@@ -106,8 +107,8 @@ class BridgeSession:
                         # as this launcher's successfully started GPU server.
                         if status.get('session_id') != self.session_id:
                             raise RuntimeError('Health endpoint belongs to a different server session.')
-                        if self.backend == 'waypoint' and status.get('backend') != 'waypoint':
-                            raise RuntimeError('Waypoint was requested but the server reports a different backend.')
+                        if self.backend != 'sd-turbo' and status.get('backend') != self.backend:
+                            raise RuntimeError(f'{self.backend} was requested but the server reports a different backend.')
                         if self.tensorrt and not str(status.get('engine', '')).startswith('TensorRT'):
                             raise RuntimeError('TensorRT was requested but is not active. Inspect bridge_logs/server.log; no endpoint was published.')
                         return

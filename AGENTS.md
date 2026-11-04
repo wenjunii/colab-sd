@@ -1,5 +1,9 @@
 # Working preferences
 
+## Commercial use
+
+- Application/runtime code selected for this project must permit commercial use. Do not infer a research-only exception from a request to try a model. Check application code and model-weight licenses separately, and record the exact distribution/revision used; a similarly named GitHub application can have different terms from the official model release.
+
 ## Automatic cleanup after tasks
 
 - The user authorizes routine cleanup of disposable files created or downloaded for a task once verification is finished, without asking again. Include one-off validation scripts, scratch files, completed installation archives, abandoned partial downloads, and redundant task copies when they are no longer needed.
