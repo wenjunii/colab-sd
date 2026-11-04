@@ -542,7 +542,8 @@ def load_pipeline():
         pipeline_ready = False
         world_backend = WaypointBackend.load(os.environ.get('WAYPOINT_QUANT', 'intw8a8'),
                                             os.environ.get('WAYPOINT_COMPILE_PROFILE', 'fast'),
-                                            prompt_seeds=os.environ.get('WAYPOINT_PROMPT_SEEDS', '0') == '1')
+                                            prompt_seeds=os.environ.get('WAYPOINT_PROMPT_SEEDS', '0') == '1',
+                                            prompt_seed_model=os.environ.get('WAYPOINT_PROMPT_SEED_MODEL', 'sd-turbo'))
         pipeline_revision += 1
         pipeline_ready = True
         print('>>> Waypoint loaded. Seed an image from TouchDesigner; first generation compiles kernels.', flush=True)

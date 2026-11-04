@@ -31,6 +31,7 @@ class BridgeSession:
         if backend != 'sd-turbo' and diffusion_model != 'sd-turbo':
             raise ValueError('Diffusion model selection applies only to the StreamDiffusion backend')
         self.diffusion_model = diffusion_model
+        self._expected_prompt_seed_model = None
         # Per-launch options belong to the child, not the caller's process.
         # None removes an inherited variable (e.g. a legacy model-cache alias).
         self.server_environment = dict(server_environment or {})
@@ -123,6 +124,9 @@ class BridgeSession:
                             raise RuntimeError(f'{self.backend} was requested but the server reports a different backend.')
                         if self.diffusion_model == 'sdxl-turbo' and status.get('diffusion_model') != self.diffusion_model:
                             raise RuntimeError('SDXL-Turbo was requested but the server reports a different model.')
+                        if (self._expected_prompt_seed_model == 'sdxl-turbo'
+                                and status.get('world_seed_model') != 'sdxl-turbo'):
+                            raise RuntimeError('SDXL-Turbo prompt seeds were requested but are not active; update the Waypoint server scripts.')
                         if self.tensorrt and not str(status.get('engine', '')).startswith('TensorRT'):
                             raise RuntimeError('TensorRT was requested but is not active. Inspect bridge_logs/server.log; no endpoint was published.')
                         return
@@ -145,6 +149,7 @@ class BridgeSession:
         self.stop()
         self.tunnel_url = None
         self.tunnel_tail = ''
+        self._expected_prompt_seed_model = None
         try:
             with socket.create_connection((self.health_host, self.port), timeout=0.5):
                 raise RuntimeError(f'Port {self.port} is already in use. Stop the previous server before launching this session.')
@@ -159,6 +164,11 @@ class BridgeSession:
                     environment[key] = value
             environment['BRIDGE_BACKEND'] = self.backend
             environment['BRIDGE_DIFFUSION_MODEL'] = self.diffusion_model
+            if self.backend == 'waypoint' and environment.get('WAYPOINT_PROMPT_SEEDS') == '1':
+                selected = environment.get('WAYPOINT_PROMPT_SEED_MODEL', 'sd-turbo')
+                if selected not in ('sd-turbo', 'sdxl-turbo'):
+                    raise ValueError('Prompt seed model must be sd-turbo or sdxl-turbo')
+                self._expected_prompt_seed_model = selected
             environment['MAX_STREAM_FPS'] = str(self.max_fps)
             environment['ENABLE_TENSORRT'] = '1' if self.tensorrt else '0'
             environment['BRIDGE_HOST'] = self.host

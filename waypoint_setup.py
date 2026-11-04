@@ -19,6 +19,7 @@ DEPENDENCIES = (
 # Compatible with the existing Hub 1.7 / Transformers 5 pins. Newer Diffusers
 # require a newer Hub; do not silently upgrade the working world-model stack.
 SEED_DEPENDENCIES = ('diffusers==0.39.0',)
+PROMPT_SEED_MODELS = ('sd-turbo', 'sdxl-turbo')
 
 
 def _capture(command, stage):

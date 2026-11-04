@@ -17,6 +17,7 @@ import venv
 from colab_launcher import BridgeSession, TUNNEL_PROTOCOLS
 from colab_setup import CORE_DEPENDENCIES, UPSTREAM_REVISION
 from bridge_protocol import OUTPUT_RESOLUTIONS
+from waypoint_setup import PROMPT_SEED_MODELS
 
 PROJECT = Path(__file__).resolve().parent
 DEFAULT_RUNTIME = PROJECT / '.workstation'
@@ -114,9 +115,11 @@ def waypoint_model_cache(runtime, selected=None):
     return cache
 
 
-def setup_waypoint(runtime, prompt_seeds=False, model_cache=None):
+def setup_waypoint(runtime, prompt_seeds=False, model_cache=None, prompt_seed_model='sd-turbo'):
     """Reuse the pinned Colab adapter/runtime in a separate workstation venv."""
     check_platform()
+    if prompt_seed_model not in PROMPT_SEED_MODELS:
+        raise ValueError('Prompt seed model must be sd-turbo or sdxl-turbo')
     runtime = Path(runtime).resolve()
     marker = runtime / 'workstation.json'
     if marker.exists():
@@ -133,7 +136,8 @@ def setup_waypoint(runtime, prompt_seeds=False, model_cache=None):
     runtime.mkdir(parents=True, exist_ok=True)
     cache = Path(model_cache or previous.get('model_cache') or runtime / 'models').expanduser().resolve()
     configuration = {'managed_by': 'colab-sd', 'backend': 'waypoint', 'revision': RUNTIME_REVISION,
-                     'ready': False, 'prompt_seeds': bool(prompt_seeds), 'model_cache': str(cache)}
+                     'ready': False, 'prompt_seeds': bool(prompt_seeds), 'model_cache': str(cache),
+                     'prompt_seed_model': prompt_seed_model}
     marker.write_text(json.dumps(configuration, indent=2) + '\n', encoding='utf-8')
     waypoint_model_cache(runtime, cache)
     # Do not install the legacy StreamDiffusion environment or download a tunnel
@@ -153,10 +157,16 @@ def waypoint_environment(runtime, configuration, arguments):
     expected = [*DEPENDENCIES, *(SEED_DEPENDENCIES if configuration['prompt_seeds'] else ())]
     if not installed.exists() or json.loads(installed.read_text(encoding='utf-8')).get('dependencies') != expected:
         raise RuntimeError('Waypoint dependencies changed. Run workstation.py setup --backend waypoint again.')
+    model = arguments.prompt_seed_model or configuration.get('prompt_seed_model', 'sd-turbo')
+    if model not in PROMPT_SEED_MODELS:
+        raise ValueError('Prompt seed model must be sd-turbo or sdxl-turbo')
+    if arguments.prompt_seed_model is not None and not configuration['prompt_seeds']:
+        raise ValueError('Enable --prompt-seeds in Waypoint setup before selecting a prompt seed model.')
     cache = waypoint_model_cache(runtime, arguments.model_cache or configuration.get('model_cache'))
     return {'WAYPOINT_QUANT': arguments.quantization or 'intw8a8',
             'WAYPOINT_COMPILE_PROFILE': arguments.compile_profile or 'fast',
             'WAYPOINT_PROMPT_SEEDS': '1' if configuration['prompt_seeds'] else '0',
+            'WAYPOINT_PROMPT_SEED_MODEL': model,
             'HF_HUB_CACHE': str(cache), 'HUGGINGFACE_HUB_CACHE': str(cache), 'TRANSFORMERS_CACHE': None,
             'TORCHINDUCTOR_CACHE_DIR': str(runtime / 'inductor-cache'),
             'TRITON_CACHE_DIR': str(runtime / 'triton-cache')}
@@ -205,7 +215,8 @@ def start(arguments):
             raise ValueError('Waypoint uses INT8/BF16 and TorchInductor; TensorRT options apply only to SD-Turbo.')
         if arguments.resolution not in (None, '1280x720'):
             raise ValueError('Waypoint uses fixed native 1280x720 output.')
-    elif arguments.quantization or arguments.compile_profile or arguments.model_cache or arguments.resolution == '1280x720':
+    elif (arguments.quantization or arguments.compile_profile or arguments.model_cache
+          or arguments.prompt_seed_model or arguments.resolution == '1280x720'):
         raise ValueError('Waypoint options require --backend waypoint.')
     python = runtime_python(runtime)
     upstream = runtime if backend == 'waypoint' else runtime / 'StreamDiffusion'
@@ -247,8 +258,9 @@ def start(arguments):
         if not tunnel:
             print('Use the workstation LAN/VPN IP if its hostname does not resolve; --advertise-host sets the printed address.')
         if backend == 'waypoint':
-            print('World page: seed an input image' + (' or choose SD-Turbo (Prompt A/B).' if configuration['prompt_seeds'] else '.'))
-            print('Prompt seeds:', configuration['prompt_seeds'], '| Model cache:', environment['HF_HUB_CACHE'])
+            print('World page: seed an input image' + (' or choose Prompt Model (A/B).' if configuration['prompt_seeds'] else '.'))
+            print('Prompt seeds:', environment['WAYPOINT_PROMPT_SEED_MODEL'] if configuration['prompt_seeds'] else 'disabled',
+                  '| Model cache:', environment['HF_HUB_CACHE'])
             print('Native 1280 x 720 |', environment['WAYPOINT_QUANT'], '| Compiler:', environment['WAYPOINT_COMPILE_PROFILE'])
         print('Ctrl+C stops this server and its tunnel. Logs:', upstream / 'bridge_logs', flush=True)
         session.wait()
@@ -264,12 +276,16 @@ def main(argv=None):
     install.add_argument('--runtime', type=Path, help='Default: .workstation for SD-Turbo; .workstation-waypoint for Waypoint')
     install.add_argument('--cuda', help='SD-Turbo CUDA wheel tag (default: cu130); Waypoint pins cu130')
     install.add_argument('--torch-version', help=f'SD-Turbo Torch version (default: {TORCH_VERSION}); Waypoint pins 2.11.0')
-    install.add_argument('--prompt-seeds', action='store_true', help='Waypoint: install and enable optional SD-Turbo prompt seeds')
+    install.add_argument('--prompt-seeds', action='store_true', help='Waypoint: install and enable optional Turbo prompt seeds')
+    install.add_argument('--prompt-seed-model', choices=PROMPT_SEED_MODELS,
+                         help='Waypoint seed generator (default: sd-turbo); requires --prompt-seeds')
     install.add_argument('--model-cache', type=Path, help='Waypoint model cache (default: runtime/models); auth stays outside')
     launch = commands.add_parser('start', help='Run generation with LAN/VPN or Cloudflare transport')
     launch.add_argument('--backend', choices=('sd-turbo', 'waypoint'), default='sd-turbo')
     launch.add_argument('--model', choices=('sd-turbo', 'sdxl-turbo'),
                         help='StreamDiffusion model (default: sd-turbo); selection applies at startup')
+    launch.add_argument('--prompt-seed-model', choices=PROMPT_SEED_MODELS,
+                        help='Waypoint seed model override for this launch; setup must enable prompt seeds')
     launch.add_argument('--runtime', type=Path, help='Use the matching setup runtime folder')
     launch.add_argument('--quantization', choices=('intw8a8', 'bf16'), help='Waypoint only (default: intw8a8)')
     launch.add_argument('--compile-profile', choices=('fast', 'max-autotune'), help='Waypoint only (default: fast)')
@@ -293,12 +309,15 @@ def main(argv=None):
     try:
         if arguments.command == 'setup':
             if arguments.backend == 'waypoint':
+                if arguments.prompt_seed_model is not None and not arguments.prompt_seeds:
+                    raise ValueError('--prompt-seed-model requires --prompt-seeds during setup.')
                 if arguments.cuda not in (None, 'cu130') or arguments.torch_version not in (None, '2.11.0'):
                     raise ValueError('The pinned Waypoint runtime requires Torch 2.11.0 / cu130; SD-Turbo uses a separate environment.')
-                setup_waypoint(arguments.runtime, arguments.prompt_seeds, arguments.model_cache)
+                setup_waypoint(arguments.runtime, arguments.prompt_seeds, arguments.model_cache,
+                               prompt_seed_model=arguments.prompt_seed_model or 'sd-turbo')
             else:
-                if arguments.prompt_seeds or arguments.model_cache:
-                    raise ValueError('--prompt-seeds and --model-cache require --backend waypoint.')
+                if arguments.prompt_seeds or arguments.model_cache or arguments.prompt_seed_model:
+                    raise ValueError('Prompt seed and model-cache setup options require --backend waypoint.')
                 setup(arguments.runtime, arguments.cuda or 'cu130', arguments.torch_version or TORCH_VERSION)
         else:
             if arguments.max_fps is None:

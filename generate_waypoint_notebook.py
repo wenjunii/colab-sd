@@ -32,15 +32,22 @@ Do not run both GPU servers on the same GPU simultaneously.
    values are held until changed. Set them to zero/empty to stop motion. Pause and Reset reuse weights.
 
 This checkpoint has no direct text conditioning. For prompt-driven starting images, enable
-**ENABLE_PROMPT_SEEDS** in Step 2, then select **World Seed Source = SD-Turbo (Prompt A/B)**
-in the updated TD component. SD-Turbo generates a 768 × 432 seed inside Colab; Waypoint
+**ENABLE_PROMPT_SEEDS** in Step 2 and choose **PROMPT_SEED_MODEL = sd-turbo / sdxl-turbo**.
+In the updated TD component select **World Seed Source = Prompt Model (A/B)**.
+The selected model generates a 768 × 432 seed inside Colab; Waypoint
 animates it at native 720p. **Auto Reseed** defaults On, with an adjustable **5-second**
 interval. Off keeps the current world until **Generate Seed from Prompt** / **Submit Prompts**.
 Each reseed resets world history and can cause a scene cut. The timer starts after the first
 usable batch and waits for output credit/batch boundaries; slow delivery can extend it.
 Both models share one GPU worker. Combined GPU performance/memory use still need validation;
 earlier Waypoint-only measurements do not establish this new mode's performance.
+SDXL-Turbo blends both token and pooled text embeddings; only one seed model is loaded.
+Its original VAE and both text encoders are retained for the seed pipeline. It uses more
+GPU memory than SD-Turbo. Combined A100 memory, quality and speed need live validation.
 Negative prompts, denoise strength, and audio reactivity do not steer prompt seeds.
+Model selection applies at server restart. Existing cached weights are preserved.
+Both seed models have separate Stability AI commercial-use terms; the bridge's MIT
+license does not replace the model licenses: https://stability.ai/license.
 Waypoint's native output is 720p, not 1024 × 768.
 It generates four frames per controller step. GPU Inference shows the whole batch time.
 Start with Fast video quality and Video Buffer 3. HTTP/2 is the default tunnel transport.
@@ -83,6 +90,7 @@ promise an A100 frame rate.
         DRIVE_MODEL_FOLDER = "StreamDiffusion/waypoint-models" # @param {type:"string"}
         # @markdown Optional prompt-to-world pipeline. Both models share one GPU worker; new seeds reset the world.
         ENABLE_PROMPT_SEEDS = False # @param {type:"boolean"}
+        PROMPT_SEED_MODEL = "sd-turbo" # @param ["sd-turbo", "sdxl-turbo"]
 
         import os
         import sys
@@ -106,6 +114,7 @@ promise an A100 frame rate.
         os.environ.pop('TRANSFORMERS_CACHE', None)
         waypoint_python, waypoint_tunnel = waypoint_setup.setup(runtime_root, prompt_seeds=ENABLE_PROMPT_SEEDS)
         os.environ['WAYPOINT_PROMPT_SEEDS'] = '1' if ENABLE_PROMPT_SEEDS else '0'
+        os.environ['WAYPOINT_PROMPT_SEED_MODEL'] = PROMPT_SEED_MODEL
         os.environ['TORCHINDUCTOR_CACHE_DIR'] = str(runtime_root / 'inductor-cache')
         print('Waypoint environment ready. Run Step 3.')
     ''')
@@ -123,6 +132,7 @@ promise an A100 frame rate.
         importlib.reload(colab_launcher)
         os.environ['WAYPOINT_QUANT'] = QUANTIZATION
         os.environ['WAYPOINT_COMPILE_PROFILE'] = COMPILE_PROFILE
+        os.environ['WAYPOINT_PROMPT_SEED_MODEL'] = PROMPT_SEED_MODEL
         waypoint_session = colab_launcher.BridgeSession(
             root=runtime_root, backend='waypoint', server_script='colab_server.py',
             python_executable=waypoint_python, cloudflared=waypoint_tunnel,
@@ -131,7 +141,7 @@ promise an A100 frame rate.
             url = waypoint_session.start()
             print('Paste this URL into the updated TouchDesigner component:')
             print(url, flush=True)
-            print('World page: choose SD-Turbo prompt seeds (if enabled), or Seed World from Input.')
+            print('World page: choose Prompt Model (A/B) if enabled, or Seed World from Input.')
             waypoint_session.wait()
         except KeyboardInterrupt:
             print('Stopping this Waypoint session...')
