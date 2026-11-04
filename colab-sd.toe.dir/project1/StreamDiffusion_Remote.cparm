@@ -38,6 +38,7 @@ pages 3 StreamDiffusion World Krea
 772804868 Deliverytime "Video Delivery RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 35
 772804868 Cooktime "Display Cook" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 36
 772804868 Streamwait "Video Buffer Wait" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 37
+772804868 Modelname "Server Model" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 38
 772804869 Worldseed "Seed World from Input" 1 1 0 0 1 1 1 2 0 "" "" World 0
 772804869 Worldreset "Reset World (reuse seed)" 1 1 0 0 1 1 1 2 0 "" "" World 1
 772804867 Worldpaused "Pause World" 1 1 0 0 1 1 1 2 0 "" "" World 2

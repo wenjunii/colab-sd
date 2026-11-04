@@ -35,6 +35,7 @@ Framesize 67109184 "-- KB"
 Deliverytime 67109184 "-- ms"
 Cooktime 67109184 "-- ms"
 Streamwait 67109184 "-- ms"
+Modelname 67109184 "--"
 Worldpaused 67108928 off
 Worldbuttons 67108928 ""
 Worldmousex 67108928 0

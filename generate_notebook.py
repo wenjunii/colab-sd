@@ -16,7 +16,7 @@ def code_cell(source):
 def make_notebook(project_dir=PROJECT_DIR):
     root = Path(project_dir)
     intro = """# StreamDiffusion Remote TouchDesigner Bridge
-Run SD-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare tunnel.
+Run SD-Turbo or SDXL-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare tunnel.
 
 1. Select a GPU runtime, then run the four code cells in order.
 2. In Step 2, enable `USE_GOOGLE_DRIVE` to retain downloaded models between runtimes.
@@ -32,6 +32,13 @@ Keep the cache private; full-weight engine archives use several GB per resolutio
 
 Supports text/image generation, prompt blending, audio controls, telemetry, snapshots,
 and 16 output presets up to 1024 x 768 (or 768 x 1024 portrait). Default: 512 x 512.
+Select `DIFFUSION_MODEL` in Step 4. SD-Turbo remains the default. SDXL-Turbo uses two
+text encoders, pooled text/size conditioning and its matching TinyVAE; it is heavier.
+Its adapter uses the same StreamDiffusion batching and both generation modes. SDXL
+GPU image quality, memory use, TensorRT compilation/reuse and FPS need validation.
+Model selection takes effect on restart. TouchDesigner displays the server's model.
+Both Turbo models have separate Stability AI commercial-use terms; see their model
+cards and https://stability.ai/license. The bridge's MIT license does not replace them.
 TouchDesigner's Video Quality menu controls JPEG traffic independently of generation
 size: Fast targets 48 KB/frame, Balanced 64 KB, and Detail allows larger frames.
 Balanced is the default. Delivery diagnostics are logged every ten seconds.
@@ -74,6 +81,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         ('protocol_code', 'bridge_protocol.py', 'bridge_protocol.py'),
         ('launcher_code', 'colab_launcher.py', 'colab_launcher.py'),
         ('tensorrt_code', 'tensorrt_backend.py', 'tensorrt_backend.py'),
+        ('sdxl_code', 'sdxl_stream.py', 'sdxl_stream.py'),
     ):
         write_server += variable + ' = ' + json.dumps((root / source_name).read_text(encoding='utf-8')) + '\n'
         write_server += f"with open({target_name!r}, 'w', encoding='utf-8') as handle:\n    handle.write({variable})\n"
@@ -82,6 +90,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         # @title Step 4: Launch Server and Cloudflare Tunnel
         # @markdown TensorRT may take several minutes to compile engines for a new output size.
         ENABLE_TENSORRT = False # @param {type:"boolean"}
+        DIFFUSION_MODEL = "sd-turbo" # @param ["sd-turbo", "sdxl-turbo"]
         MAX_FPS = 60 # @param {type:"integer"}
         # @markdown HTTP/2 improved the tested Colab route. Compare auto/quic if RTT remains high.
         TUNNEL_PROTOCOL = "http2" # @param ["http2", "auto", "quic"]
@@ -107,7 +116,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
             tensorrt=ENABLE_TENSORRT, max_fps=MAX_FPS, output_size=(width, height),
             allow_tensorrt_resize=not LOCK_TENSORRT_RESOLUTION,
             engine_cache=engine_cache, reuse_engines=REUSE_TENSORRT_ENGINES,
-            tunnel_protocol=TUNNEL_PROTOCOL)
+            tunnel_protocol=TUNNEL_PROTOCOL, diffusion_model=DIFFUSION_MODEL)
         print('TensorRT profile cache:', bridge_session.engine_cache)
         try:
             ws_url = bridge_session.start()

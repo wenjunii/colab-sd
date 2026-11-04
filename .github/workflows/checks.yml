@@ -84,6 +84,8 @@ jobs:
           print('Disposable import packages removed; CPU test environment preserved.')
           PY
       - run: python generate_notebook.py --check
+      - name: Exercise SDXL conditioning through the pinned stream core on CPU
+        run: python -B check_sdxl_stream.py
       - name: Import pinned Krea HF runtime without GPU packages or weights
         run: python -B check_krea_imports.py
       - run: git diff --check

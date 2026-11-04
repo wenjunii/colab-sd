@@ -80,7 +80,7 @@ class ProjectToolsChecks(unittest.TestCase):
             self.assertEqual(assignments[variable], (generate_notebook.PROJECT_DIR / filename).read_text(encoding='utf-8'))
 
     def test_notebook_check_detects_source_drift(self):
-        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py', 'tensorrt_backend.py'):
+        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py', 'tensorrt_backend.py', 'sdxl_stream.py'):
             (self.root / filename).write_text('# initial source\n')
         generate_notebook.generate_notebook(self.root)
         generate_notebook.generate_notebook(self.root, check=True)
