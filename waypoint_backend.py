@@ -142,6 +142,14 @@ class WaypointBackend:
             engine = engine_type(model, quant=None if quant == 'bf16' else quant,
                                  model_config_overrides={'ae_uri': vae},
                                  device='cuda', dtype=torch.bfloat16)
+        if quant == 'intw8a8' and compile_profile == 'fast':
+            # On a cold cache the pinned runtime's quantizer selects GemLite
+            # "max" for warmup and leaves it enabled. TorchInductor options do
+            # not control this custom op's independent Triton autotuner.
+            # Apply this AFTER construction so warmup cannot override it.
+            import gemlite
+            gemlite.set_autotune(False)
+            logger.info('Waypoint fast profile: GemLite default tuning selected after INT8 warmup')
         backend = cls(engine, CtrlInput, torch)
         backend.compile_profile = compile_profile
         logger.info('Waypoint compile profile: %s (native 1280 x 720, %s)', compile_profile, quant)
