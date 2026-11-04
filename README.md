@@ -362,6 +362,20 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
 | `generate_notebook.py` | Self-contained notebook generation and freshness checking |
 
+### Shared local TouchDesigner resources
+
+Development can consult these sibling repositories in the local workspace:
+
+| Local sibling | Role |
+| :--- | :--- |
+| `../td-ai-assistant` | TouchDesigner knowledge library and documentation retrieval |
+| `../td-knowledge-mcp` | Bridge between the knowledge library, MCP, and project-scoped live control |
+| `../td-embody-workspace` | Embody/Envoy MCP implementation workspace |
+
+These are optional development resources; the Colab/workstation streaming bridge and build/sync scripts do not require or manage their services. Use existing knowledge-query interfaces when relevant. Before any live Envoy inspection or change, load `get_td_project_context` and verify the approved project identity and network paths match `colab-sd`. A connection bound to another project stays documentation-only for this task; use local project files rather than changing the shared server's global profile.
+
+The shared MCP is also used by `2d-3d`, `video-effects`, and `td-knowledge-mcp`. Keep edits, installs, Git sync, and cleanup scoped to this checkout and its owned scratch. Preserve shared environments, model/index data, configuration, and existing connections. This project's build and sync workflow does not restart those services or reload their indexes.
+
 ## 🛠️ Automated Sync to GitHub
 
 Whenever you want to backup your project:

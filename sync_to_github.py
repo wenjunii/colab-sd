@@ -1,4 +1,4 @@
-"""Build, validate, and sync without shell interpolation or unchecked failures."""
+"""Build, validate, and sync this checkout without managing shared TD/MCP services."""
 import argparse
 import datetime
 import os
@@ -55,6 +55,7 @@ def sync(message, root=PROJECT_DIR, check_only=False, dry_run=False, merge=False
     if admin and not merge:
         raise SyncError('--admin requires --merge')
     if dry_run:
+        print(f'Operate on this checkout only: {root}. Shared TD/MCP services are not managed.')
         print('Dry run: build both TouchDesigner archives; regenerate notebook; run tests and notebook checks.')
         print('Use private build/test scratch and remove only that run\'s temporary files when checks finish.')
         if not check_only:

@@ -18,3 +18,11 @@
 - Existing files, review bundles, and resources created outside the current task's owned scratch require separate inspection. Do not adopt them into automatic cleanup or bypass an approval rejection with another deletion mechanism.
 
 `python sync_to_github.py --check` and normal sync runs give their build/test subprocesses a private temporary folder, disable new Python bytecode writes in those subprocesses, and permanently remove only that run's disposable scratch when the checks finish, including on failure. The success message identifies this removal as permanent. This does not install an OS-wide cleanup task.
+
+## Shared TouchDesigner resources
+
+- The sibling `../td-ai-assistant` repository is the TouchDesigner knowledge library; `../td-knowledge-mcp` bridges knowledge retrieval and MCP; `../td-embody-workspace` contains the Embody/Envoy MCP implementation. Use their existing documentation and connected tool interfaces when relevant.
+- These resources and services are shared with `2d-3d`, `video-effects`, and `td-knowledge-mcp`. Keep this task's edits, builds, dependency installation, Git operations, and cleanup scoped to `colab-sd` and its owned scratch. Shared repositories, environments, indexes, models, and configuration are not disposable assets of this project.
+- Prefer the knowledge tools for TouchDesigner documentation lookup before writing operators or TD Python. Before inspecting or changing a live project through Envoy, call `get_td_project_context` and verify the approved project identity and network paths belong to `colab-sd`.
+- If the connected context belongs to another project or cannot establish the target identity, use documentation retrieval and local project files only. Do not retarget the shared server, switch its global project profile, reload its index, restart its processes, or alter shared MCP configuration to make this project work.
+- Separately requested maintenance of shared resources must stay within the named target and preserve other projects' connections. Never stop unrelated Python, MCP, Envoy, or TouchDesigner processes.
