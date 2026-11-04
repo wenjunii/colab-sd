@@ -171,6 +171,10 @@ def validated_controls(data, current):
         return validate_world_controls(data, current)
     return validate_controls(data, current)
 
+
+def world_progress():
+    return world_backend.progress() if is_world_backend and world_backend is not None else {}
+
 def set_seed(s):
     torch.manual_seed(s)
     if torch.cuda.is_available():
@@ -483,7 +487,8 @@ def load_pipeline():
             raise RuntimeError('Waypoint uses its own INT8/BF16 runtime; disable TensorRT')
         from waypoint_backend import WaypointBackend
         pipeline_ready = False
-        world_backend = WaypointBackend.load(os.environ.get('WAYPOINT_QUANT', 'intw8a8'))
+        world_backend = WaypointBackend.load(os.environ.get('WAYPOINT_QUANT', 'intw8a8'),
+                                             os.environ.get('WAYPOINT_COMPILE_PROFILE', 'fast'))
         pipeline_revision += 1
         pipeline_ready = True
         print('>>> Waypoint loaded. Seed an image from TouchDesigner; first generation compiles kernels.', flush=True)
@@ -627,6 +632,7 @@ def health():
         "session_id": os.environ.get('BRIDGE_SESSION_ID'),
         "authentication_required": bool(access_token),
         "resolution_locked": resolution_locked(),
+        **world_progress(),
     }, status_code=200 if pipeline_ready else 503)
 
 
@@ -760,13 +766,17 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         while not stop_event.is_set():
             await asyncio.sleep(1.0)
             vram, temp = await loop.run_in_executor(None, get_gpu_telemetry)
-            if latest_stats:
+            progress = world_progress()
+            if latest_stats or progress:
                 await send_json({
                     "type": "stats", "engine": engine_for_mode(),
                     "vram": vram, "temp": temp, **latest_stats,
                     'ready': pipeline_ready, 'inflight_frames': len(outstanding_frames),
+                    **progress,
                 })
                 if time.perf_counter() >= next_log:
+                    if progress and progress['world_phase'] != 'streaming':
+                        logger.info('Waypoint progress: %s', progress['world_status'])
                     logger.info('delivery: %s, %s bytes/frame, send=%sms, display ACK RTT=%sms, '
                                 'buffer wait=%sms, client cook=%sms, window=%d, inflight=%d',
                                 video_quality, latest_stats.get('frame_bytes', '--'),
@@ -799,7 +809,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 await send_json({"type": "configured", "status": "Connected (Streaming)",
                                  "width": output_width, "height": output_height, "engine": engine_for_mode(),
                                  "ready": pipeline_ready, "mode": current_mode,
-                                 'resolution_locked': resolution_locked()})
+                                 'resolution_locked': resolution_locked(), **world_progress()})
                 if current_mode not in ('img2img', 'world'):
                     pending_frame = None
                     frame_available.clear()
@@ -909,6 +919,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             'supported_modes': ['world'] if is_world_backend else ['txt2img', 'img2img'],
             'world_seed_required': is_world_backend and world_backend.seed_image is None,
             'inference_batch_frames': 4 if is_world_backend else 1,
+            **world_progress(),
         })
         modes = ('world',) if is_world_backend else ('txt2img', 'img2img')
         tasks = [asyncio.create_task(supervise(generation_loop(mode))) for mode in modes]
@@ -928,6 +939,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     elif data.get('type') == 'world_seed' and is_world_backend:
                         assembler.clear()
                         world_seed_until = time.monotonic() + 15
+                        logger.info('Waypoint seed upload requested')
                     elif data.get('type') == 'client_options':
                         quality = data.get('video_quality', video_quality)
                         if quality not in VIDEO_QUALITY_LIMITS:
@@ -975,6 +987,10 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     continue
                 if frame_bytes:
                     world_seed_until = 0.0
+                    if is_world_backend:
+                        logger.info('Waypoint seed upload received: %d bytes', len(frame_bytes))
+                        await send_json({'type': 'world_progress', 'world_phase': 'seeding',
+                                         'world_status': 'World seed received; preparing seed and kernels'})
                     # Only one pending input: replace stale watchdog/recovery frames.
                     # Receiving continues while the worker is busy with inference.
                     pending_frame = frame_bytes
