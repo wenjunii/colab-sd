@@ -6,6 +6,42 @@ concurrency:
   group: project-checks-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
+  waypoint-bootstrap:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Repair a pip-less environment without ensurepip (no GPU packages)
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          from pathlib import Path
+          import subprocess
+          import tempfile
+          import venv
+          from unittest.mock import patch
+          from waypoint_setup import ensure_environment
+
+          host_pip = version('pip')
+          with tempfile.TemporaryDirectory(prefix='colab-sd-bootstrap-') as directory:
+              scratch = Path(directory).resolve()
+              assert scratch.parent == Path(tempfile.gettempdir()).resolve()
+              environment = scratch / 'pipless-fixture'
+              assert environment.resolve().is_relative_to(scratch)
+              venv.EnvBuilder(with_pip=False).create(environment)
+              with patch.object(venv.EnvBuilder, '_setup_pip', side_effect=AssertionError('ensurepip called')):
+                  python, repaired = ensure_environment(environment)
+                  assert repaired
+                  same_python, repaired_again = ensure_environment(environment)
+                  assert python == same_python and not repaired_again
+              subprocess.run([str(python), '-I', '-m', 'pip', '--version'], check=True)
+              assert version('pip') == host_pip
+          print('Python 3.13 bootstrap and reuse passed; disposable fixture removed.')
+          PY
   cpu-checks:
     runs-on: ubuntu-latest
     env:
