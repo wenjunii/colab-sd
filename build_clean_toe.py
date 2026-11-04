@@ -263,6 +263,10 @@ def onReceiveText(dat, rowIndex, message):
             p_eng = getattr(parent().par, 'Engine', None)
             if p_eng is not None:
                 p_eng.val = data['engine']
+        if 'model' in data:
+            p_model = getattr(parent().par, 'Modelname', None)
+            if p_model is not None:
+                p_model.val = str(data['model'])
 
         if msg_type == 'welcome':
             parent().store('connected', True)
@@ -1027,7 +1031,8 @@ def save_snapshot():
             'video_delivery_rtt': str(getattr(p, 'Deliverytime', '')),
             'display_cook_time': str(getattr(p, 'Cooktime', '')),
             'vram': str(getattr(p, 'Vram', '')),
-            'gpu_temp': str(getattr(p, 'Gputemp', ''))
+            'gpu_temp': str(getattr(p, 'Gputemp', '')),
+            'model': str(getattr(p, 'Modelname', ''))
         }
         with open(meta_path, 'w', encoding='utf-8') as f:
             json.dump(meta, f, indent=2)
@@ -1080,6 +1085,7 @@ pages 3 StreamDiffusion World Krea
 772804868 Deliverytime "Video Delivery RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 35
 772804868 Cooktime "Display Cook" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 36
 772804868 Streamwait "Video Buffer Wait" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 37
+772804868 Modelname "Server Model" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 38
 772804869 Worldseed "Seed World from Input" 1 1 0 0 1 1 1 2 0 "" "" World 0
 772804869 Worldreset "Reset World (reuse seed)" 1 1 0 0 1 1 1 2 0 "" "" World 1
 772804867 Worldpaused "Pause World" 1 1 0 0 1 1 1 2 0 "" "" World 2
@@ -1134,6 +1140,7 @@ Framesize 67109184 "-- KB"
 Deliverytime 67109184 "-- ms"
 Cooktime 67109184 "-- ms"
 Streamwait 67109184 "-- ms"
+Modelname 67109184 "--"
 Worldpaused 67108928 off
 Worldbuttons 67108928 ""
 Worldmousex 67108928 0

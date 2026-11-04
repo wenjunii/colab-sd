@@ -1,6 +1,6 @@
 # ⚡ StreamDiffusion Remote TouchDesigner Bridge (`colab-sd`)
 
-Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** (Stability AI SD-Turbo) running on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. Optional, separate Colab notebooks add **Waypoint** image-seeded world video and a **Krea Realtime** text-to-video trial. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
+Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** with **SD-Turbo** or experimental **SDXL-Turbo** on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. Optional backends add **Waypoint** image-seeded world video and a **Krea Realtime** text-to-video trial. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
 
 ![TouchDesigner](https://img.shields.io/badge/TouchDesigner-2023%2F2025-orange?logo=derivative)
 ![Model](https://img.shields.io/badge/Model-SD--Turbo%20(up%20to%201024x768)-blue)
@@ -17,6 +17,7 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 * **Workstation Pairing:** A dedicated Python environment, CUDA preflight, configurable listening address/port, persistent access token, and optional Cloudflare tunnel. Text/image generation, prompts, audio, resolution, snapshots, and telemetry use the same protocol for either location.
 * **Generation Modes:**
   * **Text-to-Image (`txt2img`):** Continuous visual stream driven by prompts, blend weights, and seeds, using a single-image SD-Turbo batch.
+  * **SDXL-Turbo model option (experimental):** Startup selection for the same text/image modes, with dual text encoders, pooled prompt blending and matching SDXL TinyVAE. SD-Turbo remains the default.
   * **Image-to-Image / Video-to-Video (`img2img`):** Real-time interactive stylization driven by TouchDesigner TOPs (external generators like `Noise TOP`, live webcam feed, or movie files).
   * **World Model (`world`, optional Waypoint notebook):** Image-seeded, controller-driven video at native **1280 × 720**. Separate runtime and weights; no Scope dependency. See the setup below.
   * **Krea Realtime (`krea`, experimental notebook):** Prompt A drives temporal video at **832 × 480**, with Pause/Reset controls. Uses the Apache-declared HF modular release; GPU validation is pending.
@@ -43,6 +44,28 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 * **Standalone Drag-and-Drop Component (`.tox`):** Single self-contained `StreamDiffusion_Remote.tox` ready to drop into ANY TouchDesigner project.
 
 ---
+
+## SDXL-Turbo in StreamDiffusion (experimental)
+
+The normal StreamDiffusion notebook and workstation runtime now offer **SDXL-Turbo** alongside the existing SD-Turbo default. Use the same `txt2img` / `img2img` modes, prompts/blend, denoise/audio controls, output presets, JPEG delivery, pairing and snapshots. Model choice is a **startup setting**; it does not replace Waypoint's SD-Turbo seed generator or the Krea backend.
+
+**Colab:** in Step 4 of [the StreamDiffusion notebook](https://colab.research.google.com/github/wenjunii/colab-sd/blob/main/StreamDiffusion_Colab_Server.ipynb), set **DIFFUSION_MODEL = "sdxl-turbo"**. Start at **512 × 512**, which the [model card](https://huggingface.co/stabilityai/sdxl-turbo) recommends. Existing larger landscape/portrait presets remain available up to 1024 × 768 / 768 × 1024; SDXL-Turbo does not add a 1024 × 1024 preset. Keep the current test running until you are ready to launch the new script; opened notebook copies and loaded TD components do not update themselves.
+
+**Workstation:** reuse the existing StreamDiffusion environment; a second CUDA environment is not needed:
+
+```powershell
+py -3.11 workstation.py start --model sdxl-turbo --advertise-host 192.168.1.50
+```
+
+On Linux replace `py -3.11` with `python3.11`. If this is a new workstation, run normal `workstation.py setup` first. Add `--tensorrt` to request TensorRT, or `--transport cloudflare` for the existing HTTP/2 tunnel. The **Server Model** readout in the updated TD component shows the model returned by the server; changing it requires restarting the server with a different startup selection. Selecting SDXL does not silently substitute SD-Turbo after a load/compile failure.
+
+The pinned StreamDiffusion wrapper only constructs the SD pipeline. `sdxl_stream.py` explicitly loads [SDXL-Turbo revision `71153311d3dbb46851df1931d3ca6e939de83304`](https://huggingface.co/stabilityai/sdxl-turbo/tree/71153311d3dbb46851df1931d3ca6e939de83304) and [TAESDXL revision `b20258aaef75ef61e659c1e0f14f251cf0ad153e`](https://huggingface.co/madebyollin/taesdxl/tree/b20258aaef75ef61e659c1e0f14f251cf0ad153e), then uses the **same pinned StreamDiffusion core**. A small adapter supplies SDXL's pooled second-encoder text and six image-size/crop values to every UNet call. Prompt A/B blending and cached embedding restoration update both token and pooled embeddings, including after denoise-strength preparation. Both stream modes share model weights. No upstream source files are patched.
+
+TensorRT exports **five live tensor inputs** for XL: latents, timesteps, token embeddings, pooled text and image-size conditioning. Batch-one text and batch-two image engines are compiled/validated separately, using the existing full-weight archive cache. Validation and cache reload checks vary prompt inputs; they must not freeze the initial prompt. Model weights/configuration fingerprints keep XL profiles separate from existing SD-Turbo archives. Drive/local model caches also retain the new pinned weights in their own Hub snapshot folders; active SD-Turbo models and caches are preserved.
+
+**Validation:** the CPU suite covers XL condition expansion, cached token/pooled blending, startup/model identity, TD telemetry, and five-input compiler contracts. A separate disposable check executes the **real pinned StreamDiffusion core and Diffusers XL pipeline**, with two randomly initialized tiny CLIP encoders, a tiny random UNet and a toy VAE, for text-to-image and batched image-to-image operations. It downloads no pretrained model weights. **Full SDXL-Turbo GPU loading, image quality, peak VRAM, TensorRT build/reuse and sustained FPS remain unverified.** SDXL has larger weights and two encoders; SD-Turbo's measured speed/VRAM results do not predict its performance.
+
+**Commercial use:** the application's StreamDiffusion code is Apache-2.0, but the [SDXL-Turbo model repository](https://huggingface.co/stabilityai/sdxl-turbo) lists a noncommercial community license and directs commercial use to [Stability AI's licensing terms](https://stability.ai/license). Those separate model terms apply to this optional selection; this project's MIT license does not grant unrestricted commercial rights to the weights. Use SDXL-Turbo commercially only under the applicable Stability AI license.
 
 ## Krea Realtime on Colab A100 40 GB+ (experimental)
 
@@ -471,6 +494,7 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `workstation.py` | Separate SD-Turbo / Waypoint Windows/Linux CUDA environments, persistent caches, pairing and LAN/VPN/Cloudflare launch |
 | `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, validated immutable deployment archives, and per-profile builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
+| `sdxl_stream.py` / `check_sdxl_stream.py` | SDXL pooled/size conditioning adapter and disposable CPU execution check against the pinned stream core |
 | `generate_notebook.py` / `generate_waypoint_notebook.py` / `generate_krea_notebook.py` | Self-contained SD-Turbo, Waypoint and Krea notebooks and freshness checking |
 | `waypoint_seed.py` | Optional pinned SD-Turbo FP16 seed generator and bounded prompt embedding cache |
 | `waypoint_backend.py` / `waypoint_setup.py` | Optional native-720p world-model adapter, bounded four-frame queue, pinned models, and isolated GPU environment |

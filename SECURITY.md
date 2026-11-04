@@ -25,6 +25,14 @@ The remaining GPU migration must update the dependency stack together, verify mo
 
 TensorRT deployment archives contain executable model graphs and must come from your own trusted runtime. Keep Drive/cache folders private; checksums detect accidental corruption, not a malicious replacement of both archive and manifest. The cache validates hardware/software/model metadata and numerical output before use. Stripped/refit engine caching remains disabled.
 
+## Optional SDXL-Turbo selection
+
+The normal StreamDiffusion runtime accepts only `sd-turbo` or `sdxl-turbo` at startup; clients cannot choose an arbitrary repository or model revision. SDXL loads the pinned official safetensors model and matching pinned TAESDXL with no remote model Python. It uses the same legacy Diffusers/Transformers environment described above; selecting XL does not remediate that stack's known vulnerabilities. Native GPU loading and XL TensorRT graphs still need hardware validation. The CPU execution probe uses disposable legacy packages and randomly initialized tiny components without pretrained weights, and does not alter the reusable test environment.
+
+Application and weight licenses are distinct: the SDXL-Turbo model repository lists `sai-nc-community` and refers commercial users to Stability AI's separate licensing terms. The bridge does not grant unrestricted commercial model rights. Exact model/TinyVAE revisions and source links are recorded in the README and adapter. Existing SD-Turbo/Waypoint/Krea selections remain available.
+
+XL TensorRT graphs retain pooled text and image-size tensors as inputs. Export/load validation includes altered prompt inputs, and native model weights/configuration remain part of the cache fingerprint. Keep deployment archives and model caches trusted/private as described above. The launcher's readiness check rejects an SD-Turbo server when SDXL-Turbo was requested; loading/compilation failure does not publish another model as a successful launch.
+
 ## Optional Waypoint runtime
 
 `Waypoint_Colab_Server.ipynb` installs `waypoint_setup.py` dependencies in a separate environment, rather than replacing SD-Turbo's compatibility stack or the notebook kernel. The runtime source is pinned to a Git commit. `waypoint_backend.py` downloads only the pinned official model's configuration/safetensors and the pinned official TAEHV checkpoint; no client-selected model code is loaded. The TAEHV runtime reads a trusted PyTorch checkpoint. Keep model cache folders private and do not substitute untrusted checkpoints.

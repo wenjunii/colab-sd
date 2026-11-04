@@ -58,6 +58,13 @@ def engine_metadata(unet, width, height, batch_size, torch_version, cuda_version
                 compiler='immutable-fp16-standard-attention-opt0')
 
 
+def alternate_inputs(inputs):
+    values = [inputs[0] * 0.5, inputs[1] * 0.5, inputs[2] * 0.5]
+    if len(inputs) == 5:
+        values.extend([inputs[3] * 0.5, inputs[4]])
+    return values
+
+
 def load_engine_archive(directory, metadata, inputs, expected, reference=None):
     """Load a full-weight immutable archive; never refit cached engines."""
     import torch
@@ -79,7 +86,7 @@ def load_engine_archive(directory, metadata, inputs, expected, reference=None):
             raise ValueError('Archive does not contain a TensorRT execution graph')
         torch.testing.assert_close(module(*inputs), expected, rtol=0.05, atol=0.05)
         if reference is not None:
-            alternate = [inputs[0] * 0.5, inputs[1] * 0.5, inputs[2] * 0.5]
+            alternate = alternate_inputs(inputs)
             torch.testing.assert_close(module(*alternate), reference(*alternate), rtol=0.05, atol=0.05)
         torch.cuda.synchronize()
         print(f'>>> Loaded and validated full-weight TensorRT archive: {directory}', flush=True)
@@ -112,7 +119,7 @@ def save_engine_archive(module, directory, metadata, inputs, expected, reference
                 raise ValueError('Saved graph has no TensorRT execution')
             torch.testing.assert_close(loaded(*inputs), expected, rtol=0.05, atol=0.05)
             if reference is not None:
-                alternate = [inputs[0] * 0.5, inputs[1] * 0.5, inputs[2] * 0.5]
+                alternate = alternate_inputs(inputs)
                 torch.testing.assert_close(loaded(*alternate), reference(*alternate), rtol=0.05, atol=0.05)
             torch.cuda.synchronize()
             record = dict(metadata=metadata, sha256=file_digest(local))
@@ -194,7 +201,13 @@ class TensorRTUNet:
         import torch
         if sample.shape[0] != self.batch_size:
             raise ValueError('TensorRT UNet batch size does not match the compiled mode')
-        result = self.compiled(sample, timestep.to(dtype=torch.float32), encoder_hidden_states)
+        inputs = [sample, timestep.to(dtype=torch.float32), encoder_hidden_states]
+        if getattr(self.config, 'addition_embed_type', None) == 'text_time':
+            conditioning = kwargs.get('added_cond_kwargs') or {}
+            if any(key not in conditioning for key in ('text_embeds', 'time_ids')):
+                raise ValueError('SDXL TensorRT requires live pooled text and image-size conditioning')
+            inputs.extend([conditioning['text_embeds'], conditioning['time_ids']])
+        result = self.compiled(*inputs)
         return (result,)
 
     def to(self, *args, **kwargs):
@@ -222,7 +235,14 @@ def compile_unet(unet, width, height, batch_size, cache_root=None):
         def forward(self, sample, timestep, encoder_hidden_states):
             return self.model(sample, timestep, encoder_hidden_states=encoder_hidden_states, return_dict=False)[0]
 
-    graph = UNetGraph(unet).eval()
+    class XLUNetGraph(UNetGraph):
+        def forward(self, sample, timestep, encoder_hidden_states, text_embeds, time_ids):
+            return self.model(sample, timestep, encoder_hidden_states=encoder_hidden_states,
+                              added_cond_kwargs={'text_embeds': text_embeds, 'time_ids': time_ids},
+                              return_dict=False)[0]
+
+    is_xl = getattr(unet.config, 'addition_embed_type', None) == 'text_time'
+    graph = (XLUNetGraph(unet) if is_xl else UNetGraph(unet)).eval()
     reuse_engines = os.environ.get('BRIDGE_TRT_ENGINE_REUSE', '1') == '1'
     cache_root = cache_root or os.environ.get('BRIDGE_TRT_CACHE_DIR', 'engines/torch-tensorrt')
     inputs = [
@@ -230,6 +250,15 @@ def compile_unet(unet, width, height, batch_size, cache_root=None):
         torch.full((batch_size,), 999.0, device=unet.device, dtype=torch.float32),
         torch.randn((batch_size, 77, unet.config.cross_attention_dim), device=unet.device, dtype=unet.dtype),
     ]
+    if is_xl:
+        pooled_dim = unet.config.projection_class_embeddings_input_dim - 6 * unet.config.addition_time_embed_dim
+        if pooled_dim <= 0:
+            raise ValueError('Invalid SDXL pooled text dimension')
+        inputs.extend([
+            torch.randn((batch_size, pooled_dim), device=unet.device, dtype=unet.dtype),
+            torch.tensor([[height, width, 0, 0, height, width]], device=unet.device,
+                         dtype=unet.dtype).repeat(batch_size, 1),
+        ])
     cache = cache_directory(cache_root, width, height, batch_size, torch.__version__,
                             f'{torch_tensorrt.__version__}-sdk-{tensorrt.__version__}',
                             torch.cuda.get_device_capability())
@@ -279,7 +308,8 @@ def compile_unet(unet, width, height, batch_size, cache_root=None):
         torch.testing.assert_close(actual, expected, rtol=0.05, atol=0.05)
         torch.cuda.synchronize()
         # Check another timestep/input before exporting or reporting readiness.
-        check_inputs = [inputs[0] * 0.5, inputs[1] * 0.5, inputs[2] * 0.5]
+        # Prompt conditioning stays a graph input, never frozen in a cache.
+        check_inputs = alternate_inputs(inputs)
         torch.testing.assert_close(compiled(*check_inputs), graph(*check_inputs), rtol=0.05, atol=0.05)
         if reuse_engines:
             save_engine_archive(compiled, cache, metadata, inputs, expected, graph)

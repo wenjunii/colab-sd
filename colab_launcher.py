@@ -20,12 +20,17 @@ class BridgeSession:
                  host='0.0.0.0', port=8000, tunnel=True, advertise_host=None,
                  server_script='server.py', python_executable=None, cloudflared=None, access_token=None,
                  output_size=(512, 512), allow_tensorrt_resize=False, engine_cache=None, reuse_engines=True,
-                 tunnel_protocol='auto', backend='sd-turbo', server_environment=None):
+                 tunnel_protocol='auto', backend='sd-turbo', server_environment=None, diffusion_model='sd-turbo'):
         if backend not in ('sd-turbo', 'waypoint', 'krea'):
             raise ValueError('Backend must be sd-turbo, waypoint, or krea')
         if backend != 'sd-turbo' and tensorrt:
             raise ValueError('This backend uses its own runtime, not the SD-Turbo TensorRT engines')
         self.backend = backend
+        if diffusion_model not in ('sd-turbo', 'sdxl-turbo'):
+            raise ValueError('Diffusion model must be sd-turbo or sdxl-turbo')
+        if backend != 'sd-turbo' and diffusion_model != 'sd-turbo':
+            raise ValueError('Diffusion model selection applies only to the StreamDiffusion backend')
+        self.diffusion_model = diffusion_model
         # Per-launch options belong to the child, not the caller's process.
         # None removes an inherited variable (e.g. a legacy model-cache alias).
         self.server_environment = dict(server_environment or {})
@@ -116,6 +121,8 @@ class BridgeSession:
                             raise RuntimeError('Health endpoint belongs to a different server session.')
                         if self.backend != 'sd-turbo' and status.get('backend') != self.backend:
                             raise RuntimeError(f'{self.backend} was requested but the server reports a different backend.')
+                        if self.diffusion_model == 'sdxl-turbo' and status.get('diffusion_model') != self.diffusion_model:
+                            raise RuntimeError('SDXL-Turbo was requested but the server reports a different model.')
                         if self.tensorrt and not str(status.get('engine', '')).startswith('TensorRT'):
                             raise RuntimeError('TensorRT was requested but is not active. Inspect bridge_logs/server.log; no endpoint was published.')
                         return
@@ -151,6 +158,7 @@ class BridgeSession:
                 else:
                     environment[key] = value
             environment['BRIDGE_BACKEND'] = self.backend
+            environment['BRIDGE_DIFFUSION_MODEL'] = self.diffusion_model
             environment['MAX_STREAM_FPS'] = str(self.max_fps)
             environment['ENABLE_TENSORRT'] = '1' if self.tensorrt else '0'
             environment['BRIDGE_HOST'] = self.host

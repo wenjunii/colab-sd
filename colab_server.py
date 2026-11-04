@@ -7,6 +7,17 @@ import hmac
 backend_name = os.environ.get('BRIDGE_BACKEND', 'sd-turbo')
 is_world_backend = backend_name == 'waypoint'
 is_krea_backend = backend_name == 'krea'
+diffusion_model = os.environ.get('BRIDGE_DIFFUSION_MODEL', 'sd-turbo')
+if diffusion_model not in ('sd-turbo', 'sdxl-turbo'):
+    raise ValueError('Diffusion model must be sd-turbo or sdxl-turbo')
+
+
+def model_label():
+    if is_world_backend:
+        return 'Waypoint 1.5-1B'
+    if is_krea_backend:
+        return 'Krea Realtime 14B'
+    return 'SDXL-Turbo' if diffusion_model == 'sdxl-turbo' else 'SD-Turbo'
 
 if not (is_world_backend or is_krea_backend):
     # 1. Compatibility shims for huggingface_hub
@@ -221,13 +232,14 @@ def apply_prompts_and_blend(prompt_a=None, prompt_b=None, blend=None, neg_prompt
             key = (id(core_pipe), prompt, current_neg_prompt)
             embedding = prompt_embedding_cache.pop(key, None)
             if embedding is None:
-                embedding = core_pipe.encode_prompt(
+                encoded = core_pipe.encode_prompt(
                     prompt=prompt,
                     device=device,
                     num_images_per_prompt=1,
                     do_classifier_free_guidance=False,
                     negative_prompt=current_neg_prompt,
-                )[0]
+                )
+                embedding = (encoded[0], encoded[2]) if diffusion_model == 'sdxl-turbo' else encoded[0]
                 # Bound retained GPU memory while editing prompts interactively.
                 if len(prompt_embedding_cache) >= 4:
                     del prompt_embedding_cache[next(iter(prompt_embedding_cache))]
@@ -240,7 +252,8 @@ def apply_prompts_and_blend(prompt_a=None, prompt_b=None, blend=None, neg_prompt
             if current_prompt_b and current_prompt_blend > 0.001:
                 embed_b = encode_cached(current_prompt_b)
                 alpha = current_prompt_blend
-                blended = (1.0 - alpha) * embed_a + alpha * embed_b
+                blended = (tuple((1.0 - alpha) * a + alpha * b for a, b in zip(embed_a, embed_b))
+                           if diffusion_model == 'sdxl-turbo' else (1.0 - alpha) * embed_a + alpha * embed_b)
             else:
                 blended = embed_a
 
@@ -249,7 +262,10 @@ def apply_prompts_and_blend(prompt_a=None, prompt_b=None, blend=None, neg_prompt
                 if s is not None:
                     target = s.stream if hasattr(s, "stream") else s
                     if hasattr(target, "prompt_embeds"):
-                        target.prompt_embeds = blended.repeat(target.batch_size, 1, 1)
+                        tokens = blended[0] if diffusion_model == 'sdxl-turbo' else blended
+                        target.prompt_embeds = tokens.repeat(target.batch_size, 1, 1)
+                        if diffusion_model == 'sdxl-turbo':
+                            target.unet.set_conditioning(blended[1])
 
         applied_prompt_state = state
         logger.debug("Prompt embeddings updated (blend=%.2f)", current_prompt_blend)
@@ -488,6 +504,9 @@ def compress_frame(arr_bgr, max_bytes=None, allow_oversize=False):
 
 
 def create_txt2img_pipeline():
+    if diffusion_model == 'sdxl-turbo':
+        from sdxl_stream import SDXLStreamWrapper
+        return SDXLStreamWrapper.load(output_width, output_height)
     # StreamDiffusion's bundled TensorRT/Polygraphy path targets old CUDA 11/12
     # runtimes. Load the native models, then compile their UNets explicitly.
     return StreamDiffusionWrapper(
@@ -528,7 +547,7 @@ def load_pipeline():
         pipeline_ready = True
         print('>>> Waypoint loaded. Seed an image from TouchDesigner; first generation compiles kernels.', flush=True)
         return
-    if StreamDiffusionWrapper is None:
+    if StreamDiffusionWrapper is None and diffusion_model != 'sdxl-turbo':
         raise RuntimeError("StreamDiffusion is not installed. Run Colab setup or workstation.py setup first.")
     pipeline_revision += 1
     prompt_embedding_cache.clear()
@@ -544,8 +563,8 @@ def load_pipeline():
     active_engine = "PyTorch (FP16)"
     img2img_engine = "PyTorch (FP16)"
     requested = "TensorRT" if enable_tensorrt else "PyTorch FP16"
-    print(f">>> Initializing SD-Turbo on {device.upper()}; requested backend: {requested}", flush=True)
-    print(">>> Initializing Text-to-Image pipeline (single-image SD-Turbo, t_index_list=[0])...", flush=True)
+    print(f'>>> Initializing {model_label()} on {device.upper()}; requested backend: {requested}', flush=True)
+    print(f'>>> Initializing Text-to-Image pipeline (single-image {model_label()}, t_index_list=[0])...', flush=True)
     stream_txt2img = create_txt2img_pipeline()
     set_seed(current_seed)
 
@@ -585,11 +604,15 @@ def load_pipeline():
                     logger.info(f"Updated img2img denoise strength to {strength:.2f} (t_index_list={new_t_list})")
             def __call__(self, image):
                 x_output = self.stream(image)
+                if diffusion_model == 'sdxl-turbo':
+                    return self.stream.image_processor.postprocess(x_output, output_type='pil')[0]
                 pil_out = postprocess_image(x_output, output_type="pil")
                 return pil_out[0] if isinstance(pil_out, list) else pil_out
 
         stream_img2img = SharedImg2ImgWrapper(stream_core)
     except Exception as e:
+        if diffusion_model == 'sdxl-turbo':
+            raise RuntimeError('SDXL img2img initialization failed; no other model was substituted') from e
         print(">>> Fallback to standalone img2img wrapper:", e)
         stream_img2img = StreamDiffusionWrapper(
             model_id_or_path="stabilityai/sd-turbo",
@@ -616,10 +639,12 @@ def load_pipeline():
     if enable_tensorrt:
         # Batch one serves txt2img; the two-timestep img2img stream uses batch
         # two. Compile and validate both before reporting readiness.
-        txt_unet = compile_tensorrt_unet(stream_txt2img.stream.unet, output_width, output_height, 1)
-        img_unet = compile_tensorrt_unet(stream_img2img.stream.unet, output_width, output_height, 2)
-        stream_txt2img.stream.unet = txt_unet
-        stream_img2img.stream.unet = img_unet
+        txt_source, img_source = stream_txt2img.stream.unet, stream_img2img.stream.unet
+        is_xl = diffusion_model == 'sdxl-turbo'
+        txt_unet = compile_tensorrt_unet(txt_source.model if is_xl else txt_source, output_width, output_height, 1)
+        img_unet = compile_tensorrt_unet(img_source.model if is_xl else img_source, output_width, output_height, 2)
+        stream_txt2img.stream.unet = txt_source.with_model(txt_unet) if is_xl else txt_unet
+        stream_img2img.stream.unet = img_source.with_model(img_unet) if is_xl else img_unet
         active_engine = img2img_engine = "TensorRT (UNet)"
         print(">>> TensorRT UNet acceleration enabled for BOTH generation modes; TinyVAE remains PyTorch.", flush=True)
 
@@ -659,6 +684,7 @@ def health():
     return JSONResponse({
         "ready": pipeline_ready, "protocol": PROTOCOL_VERSION,
         "mode": current_mode, "engine": engine_for_mode(),
+        "model": model_label(), "diffusion_model": diffusion_model,
         "width": output_width, "height": output_height,
         "client_connected": active_client is not None,
         "last_error": last_pipeline_error,
@@ -806,7 +832,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             progress = world_progress()
             if latest_stats or progress:
                 await send_json({
-                    "type": "stats", "engine": engine_for_mode(),
+                    "type": "stats", "engine": engine_for_mode(), "model": model_label(),
                     "vram": vram, "temp": temp, **latest_stats,
                     'ready': pipeline_ready, 'inflight_frames': len(outstanding_frames),
                     **progress,
@@ -944,6 +970,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         await send_json({
             "type": "welcome", "message": "StreamDiffusion server connected",
             "engine": engine_for_mode(), "prompt_a": current_prompt_a,
+            "model": model_label(), "diffusion_model": diffusion_model,
             "prompt_b": current_prompt_b, "blend": current_prompt_blend,
             "mode": current_mode, "seed": current_seed, "strength": current_strength,
             "width": output_width, "height": output_height,
@@ -1040,12 +1067,23 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         stop_event.set()
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if is_world_backend or is_krea_backend:
-            # Await queued model work before releasing controller ownership.
-            await loop.run_in_executor(model_executor, (krea_backend if is_krea_backend else world_backend).release_controls)
-        if active_client is websocket:
-            active_client = None
+        backend_to_release = krea_backend if is_krea_backend else world_backend if is_world_backend else None
+        def release_controller():
+            global active_client
+            try:
+                if backend_to_release is not None:
+                    backend_to_release.release_controls()
+            finally:
+                if active_client is websocket:
+                    active_client = None
+        # Submit before any cancellable await. An ASGI cancellation must not
+        # cancel this worker cleanup or leave its controller slot reserved.
+        # The worker serializes it behind already-running model operations.
+        cleanup = model_executor.submit(release_controller)
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            await asyncio.shield(asyncio.wrap_future(cleanup))
 
 
 if __name__ == "__main__":

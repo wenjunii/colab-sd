@@ -198,6 +198,8 @@ def start(arguments):
     runtime = arguments.runtime.resolve()
     backend = arguments.backend
     if backend == 'waypoint':
+        if arguments.model is not None:
+            raise ValueError('--model applies only to the StreamDiffusion backend.')
         if (arguments.tensorrt or arguments.allow_tensorrt_resize or arguments.engine_cache
                 or arguments.no_engine_cache):
             raise ValueError('Waypoint uses INT8/BF16 and TorchInductor; TensorRT options apply only to SD-Turbo.')
@@ -235,7 +237,8 @@ def start(arguments):
                                         tuple(map(int, (arguments.resolution or '512x512').split('x'))),
                             allow_tensorrt_resize=arguments.allow_tensorrt_resize,
                             engine_cache=arguments.engine_cache, reuse_engines=not arguments.no_engine_cache,
-                            tunnel_protocol=arguments.tunnel_protocol, backend=backend, server_environment=environment)
+                            tunnel_protocol=arguments.tunnel_protocol, backend=backend, server_environment=environment,
+                            diffusion_model=arguments.model or 'sd-turbo')
     try:
         url = session.start()
         print(f'\n{backend} workstation is ready. In TouchDesigner select RTX Workstation.')
@@ -265,6 +268,8 @@ def main(argv=None):
     install.add_argument('--model-cache', type=Path, help='Waypoint model cache (default: runtime/models); auth stays outside')
     launch = commands.add_parser('start', help='Run generation with LAN/VPN or Cloudflare transport')
     launch.add_argument('--backend', choices=('sd-turbo', 'waypoint'), default='sd-turbo')
+    launch.add_argument('--model', choices=('sd-turbo', 'sdxl-turbo'),
+                        help='StreamDiffusion model (default: sd-turbo); selection applies at startup')
     launch.add_argument('--runtime', type=Path, help='Use the matching setup runtime folder')
     launch.add_argument('--quantization', choices=('intw8a8', 'bf16'), help='Waypoint only (default: intw8a8)')
     launch.add_argument('--compile-profile', choices=('fast', 'max-autotune'), help='Waypoint only (default: fast)')
