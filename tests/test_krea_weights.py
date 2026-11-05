@@ -100,6 +100,20 @@ class KreaWeightChecks(unittest.TestCase):
             download.assert_not_called()
         self.assertEqual((self.target / self.name).read_bytes(), self.valid)
 
+    def test_invalid_receipt_rehashes_good_local_weights_without_rereading_drive(self):
+        self.stage()
+        (self.source / self.name).write_bytes(b'bad persistent cache')
+        receipt = self.target / '.validated.json'
+        for content in ('invalid JSON', '{}'):
+            receipt.write_text(content)
+            with patch.object(cache, 'validate_checkpoint', wraps=cache.validate_checkpoint) as validate, \
+                    patch.object(cache, 'copy_checkpoint', side_effect=AssertionError('unneeded Drive copy')), \
+                    patch('huggingface_hub.hf_hub_download') as download:
+                self.stage()
+                validate.assert_called_once()
+                download.assert_not_called()
+            self.assertIn(self.name, json.loads(receipt.read_text()))
+
     def test_interrupted_staging_preserves_completed_files_and_cleans_owned_partial(self):
         second = 'transformer/second.safetensors'
         (self.source / second).write_bytes(self.valid)

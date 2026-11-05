@@ -75,8 +75,12 @@ def main():
         save_file({'fixture': np.arange(8, dtype=np.float32)}, checkpoint)
         expected = {'tiny.safetensors': (checkpoint.stat().st_size, hashlib.sha256(checkpoint.read_bytes()).hexdigest())}
         staged = stage_snapshot(fixture, scratch / 'staged', MODEL_ID, MODEL_REVISION, expected, [])
-        pipeline = prepare_pipeline(snapshot, scratch / 'wan', scratch)
-        subprocess.run([sys.executable, '-B', '-c', SMOKE, str(pipeline), str(snapshot), str(staged / checkpoint.name)],
+        # Exercise dynamic imports from the same revision-named local folder
+        # layout used by the GPU loader, including its custom transformer code.
+        runtime = stage_snapshot(snapshot, scratch / 'model-files' / ('krea-' + MODEL_REVISION),
+                                 MODEL_ID, MODEL_REVISION, {}, list(RUNTIME_HASHES))
+        pipeline = prepare_pipeline(runtime, scratch / 'wan', scratch)
+        subprocess.run([sys.executable, '-B', '-c', SMOKE, str(pipeline), str(runtime), str(staged / checkpoint.name)],
                         cwd=scratch, env=env, check=True, timeout=120)
     print('Disposable import scratch permanently removed; CPU environment preserved. No model weights downloaded.')
 
