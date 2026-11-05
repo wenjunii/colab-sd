@@ -1,13 +1,15 @@
 """Check pinned HF code imports on CPU, without downloading model weights."""
 from concurrent.futures import ThreadPoolExecutor
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import urllib.request
 
-from krea_assets import MODEL_ID, MODEL_REVISION, RUNTIME_HASHES, prepare_pipeline
+from krea_assets import MODEL_ID, MODEL_REVISION, WAN_ID, WAN_REVISION, RUNTIME_HASHES, prepare_pipeline
+from krea_weights import KREA_WEIGHTS, WAN_WEIGHTS, stage_snapshot
 
 PACKAGES = ('diffusers==0.42.1', 'accelerate==1.12.0', 'peft==0.21.2',
             'einops==0.8.2', 'ftfy==6.3.1', 'wcwidth==0.9.4', 'imageio==2.38.1',
@@ -27,6 +29,11 @@ assert model.__name__ == 'CausalWanModel'
 assert hasattr(AutoencoderKLWan, 'clear_cache')
 assert BitsAndBytesConfig(load_in_8bit=True).load_in_8bit
 print('Pinned Krea blocks, transformer class, VAE cache API and INT8 configuration import on CPU.')
+from diffusers.models.model_loading_utils import load_state_dict
+import torch
+weights = load_state_dict(sys.argv[3], map_location='cpu')
+assert torch.equal(weights['fixture'], torch.arange(8, dtype=torch.float32))
+print('Real Diffusers deserialization of a SHA-256-validated, staged CPU checkpoint passed.')
 '''
 
 
@@ -51,8 +58,29 @@ def main():
                 target.write_bytes(response.read())
         with ThreadPoolExecutor(max_workers=5) as pool:
             list(pool.map(fetch, RUNTIME_HASHES))
-        pipeline = prepare_pipeline(snapshot, scratch / 'wan', scratch)
-        subprocess.run([sys.executable, '-B', '-c', SMOKE, str(pipeline), str(snapshot)],
+        for repo, revision, weights in ((MODEL_ID, MODEL_REVISION, KREA_WEIGHTS),
+                                         (WAN_ID, WAN_REVISION, WAN_WEIGHTS)):
+            with urllib.request.urlopen(f'https://huggingface.co/api/models/{repo}/revision/{revision}?blobs=true',
+                                        timeout=60) as response:
+                metadata = {item['rfilename']: item for item in json.load(response)['siblings']}
+            for name, (size, digest) in weights.items():
+                assert (metadata[name]['size'], metadata[name]['lfs']['sha256']) == (size, digest), name
+        print('Nine checkpoint sizes/SHA-256 values match pinned Hub metadata; no weight payloads fetched.')
+        import hashlib
+        import numpy as np
+        from safetensors.numpy import save_file
+        fixture = scratch / 'fixture'
+        fixture.mkdir()
+        checkpoint = fixture / 'tiny.safetensors'
+        save_file({'fixture': np.arange(8, dtype=np.float32)}, checkpoint)
+        expected = {'tiny.safetensors': (checkpoint.stat().st_size, hashlib.sha256(checkpoint.read_bytes()).hexdigest())}
+        staged = stage_snapshot(fixture, scratch / 'staged', MODEL_ID, MODEL_REVISION, expected, [])
+        # Exercise dynamic imports from the same revision-named local folder
+        # layout used by the GPU loader, including its custom transformer code.
+        runtime = stage_snapshot(snapshot, scratch / 'model-files' / ('krea-' + MODEL_REVISION),
+                                 MODEL_ID, MODEL_REVISION, {}, list(RUNTIME_HASHES))
+        pipeline = prepare_pipeline(runtime, scratch / 'wan', scratch)
+        subprocess.run([sys.executable, '-B', '-c', SMOKE, str(pipeline), str(runtime), str(staged / checkpoint.name)],
                         cwd=scratch, env=env, check=True, timeout=120)
     print('Disposable import scratch permanently removed; CPU environment preserved. No model weights downloaded.')
 

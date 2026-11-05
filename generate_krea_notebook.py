@@ -7,7 +7,7 @@ from textwrap import dedent
 from generate_notebook import PROJECT_DIR, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'tensorrt_backend.py',
-           'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_assets.py', 'krea_backend.py')
+           'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_assets.py', 'krea_weights.py', 'krea_backend.py')
 
 
 def make_notebook(project_dir=PROJECT_DIR):
@@ -24,7 +24,9 @@ stops another server. Its isolated environment does not replace notebook kernel 
 
 1. Run Step 1. L4/T4 and GPUs with less than 35 GiB total / 30 GiB free VRAM are rejected.
 2. Step 2 can store weights in Drive, under `StreamDiffusion/krea-models`. Missing files
-   download once; later sessions reuse the pinned snapshots. Allow roughly 45 GB of storage.
+   download once; later sessions reuse the pinned snapshots. Allow roughly 55 GB in Drive
+   and 55 GB free on the VM for validated local model files. With Drive disabled, both
+   the Hub cache and local copies use VM disk (roughly 110 GB for weights alone).
 3. Launch Step 3, open the updated TD project/component, paste the URL and enable Connect.
    The handshake selects **Krea Realtime** and fixed **832 × 480** output.
 4. Edit **Prompt A** / pulse **Submit Prompts**. Changes apply at the next generated chunk.
@@ -49,6 +51,16 @@ This is a repeating-clip trial, not an uninterrupted infinite-history stream.
 Pause waits for a running chunk to finish. Generation errors stop retries until Reset.
 Keep the Colab launch cell and TouchDesigner running; interrupt the cell to stop only its
 owned server/tunnel. Drive preserves weights, not GPU state or first-use compilation.
+
+Before loading, the server copies weights into `/content/colab-sd-krea/model-files`,
+checks all nine pinned checkpoint sizes/SHA-256 hashes, and parses their Safetensors
+headers. Progress is logged during large copies. Inference loads these VM-local files
+instead of memory-mapping Drive. A validated local copy is reused on the same VM.
+An invalid cached checkpoint is downloaded again once, individually; valid models and
+the isolated Python environment are preserved. A persistent failure stops startup with
+the filename; it does not delete the Drive model folder or retry indefinitely.
+If an older script failed with `header too large`, rerun this updated Step 2, then Step 3.
+Saved notebook copies embed their scripts and do not automatically receive this fix.
 
 [HF runtime/model and declared license](https://huggingface.co/krea/krea-realtime-video/tree/9a2ceea280e5d584c6a28d384a9c19e38c810f8c) ·
 [Wan components/license](https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers/tree/38ec498cb3208fb688890f8cc7e94ede2cbd7f68) ·
