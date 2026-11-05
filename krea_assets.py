@@ -57,7 +57,23 @@ def prepare_pipeline(snapshot, wan_snapshot, root):
 
 def download_assets(root):
     from huggingface_hub import snapshot_download
+    from krea_weights import KREA_WEIGHTS, WAN_WEIGHTS, owned_path, stage_snapshot
     snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION,
                                  allow_patterns=[*RUNTIME_HASHES, 'README.md', 'LICENSE*', 'transformer/*.safetensors'])
     wan = snapshot_download(WAN_ID, revision=WAN_REVISION, allow_patterns=list(WAN_PATTERNS))
-    return Path(snapshot), prepare_pipeline(snapshot, wan, root)
+    verify_runtime(snapshot)
+    local = Path(root).resolve() / 'model-files'
+    local.mkdir(parents=True, exist_ok=True)
+    # Keep the persistent Hub/Drive cache intact and load from validated VM-local
+    # files. Inference should not mmap multi-GB checkpoints through Drive FUSE.
+    krea_files = [*RUNTIME_HASHES, *[p.name for p in Path(snapshot).iterdir()
+                                  if p.is_file() and (p.name == 'README.md' or p.name.startswith('LICENSE'))]]
+    from fnmatch import fnmatch
+    wan_files = [p.relative_to(wan).as_posix() for p in Path(wan).rglob('*')
+                 if p.is_file() and p.suffix != '.safetensors'
+                 and any(fnmatch(p.relative_to(wan).as_posix(), pattern) for pattern in WAN_PATTERNS)]
+    staged = stage_snapshot(snapshot, owned_path(local, 'krea-' + MODEL_REVISION),
+                            MODEL_ID, MODEL_REVISION, KREA_WEIGHTS, krea_files)
+    staged_wan = stage_snapshot(wan, owned_path(local, 'wan-' + WAN_REVISION),
+                                WAN_ID, WAN_REVISION, WAN_WEIGHTS, wan_files)
+    return staged, prepare_pipeline(staged, staged_wan, root)

@@ -1,0 +1,168 @@
+"""Validate pinned Krea/Wan weights and stage them on the runtime's local disk."""
+import hashlib
+import json
+import logging
+from pathlib import Path
+import shutil
+import tempfile
+import time
+
+logger = logging.getLogger(__name__)
+
+# Byte sizes and LFS SHA-256 values from the two revisions in krea_assets.py.
+# No duplicate root Krea checkpoint or unused Wan transformer is included.
+KREA_WEIGHTS = {
+    'transformer/diffusion_pytorch_model-00001-of-00003.safetensors':
+        (9968228976, '5c179cb7e91005fe6e009bfb42df4ed70316f03bbc35d33e303021b33b564791'),
+    'transformer/diffusion_pytorch_model-00002-of-00003.safetensors':
+        (9891538864, 'a3e0f19e177dd8d83e244281ffdada88c150e080a9503dfd0f78f5acfe63563a'),
+    'transformer/diffusion_pytorch_model-00003-of-00003.safetensors':
+        (8717326272, '15c15fb4b8b8a181ff23b142566389344fb34973dddc8c49b4ff0dee29db2735'),
+}
+WAN_WEIGHTS = {
+    'text_encoder/model-00001-of-00005.safetensors':
+        (4972389712, 'c0ef3a140898e228a3520c9adec60743d2e8e5b3d229651bb37f1a3921919f99'),
+    'text_encoder/model-00002-of-00005.safetensors':
+        (4899225672, '481c7b2b39771c44df6dd8d13ee12ed072d731b4a650bd092885d4d52db229ad'),
+    'text_encoder/model-00003-of-00005.safetensors':
+        (4966309504, 'f93148bcc04052a169e1e49bfcf6125df6cf9bf243cb9c627da75266cf8e35c3'),
+    'text_encoder/model-00004-of-00005.safetensors':
+        (4999880704, 'a451792c739c05bca4606190cc2dd16731411bac03b4cf6aacc5767321f857c9'),
+    'text_encoder/model-00005-of-00005.safetensors':
+        (2885866152, '7e76e18d224531b8197a46231cb53daf7f2f6ca707130252becf933026ac4eea'),
+    'vae/diffusion_pytorch_model.safetensors':
+        (507591892, 'd6e524b3fffede1787a74e81b30976dce5400c4439ba64222168e607ed19e793'),
+}
+
+
+class InvalidCheckpoint(ValueError):
+    pass
+
+
+def owned_path(root, name):
+    path = (root / name).resolve()
+    if not path.is_relative_to(root) or path == root:
+        raise ValueError('Krea staging path resolved outside its model folder')
+    return path
+
+
+def fingerprint(path):
+    stat = path.stat()
+    return [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+
+def validate_checkpoint(path, expected):
+    """Check the whole file's digest and parse its header, without loading tensors."""
+    from safetensors import safe_open
+    size, digest = expected
+    try:
+        actual_size = path.stat().st_size
+    except FileNotFoundError as exc:
+        raise InvalidCheckpoint('checkpoint is missing') from exc
+    if actual_size != size:
+        raise InvalidCheckpoint(f'expected {size} bytes, found {actual_size}')
+    with path.open('rb') as source:
+        actual_digest = hashlib.file_digest(source, 'sha256').hexdigest()
+    if actual_digest != digest:
+        raise InvalidCheckpoint('SHA-256 does not match the pinned weight')
+    try:
+        with safe_open(path, framework='np') as checkpoint:
+            if not checkpoint.keys():
+                raise InvalidCheckpoint('checkpoint contains no tensors')
+    except Exception as exc:
+        raise InvalidCheckpoint(f'invalid Safetensors header: {exc}') from exc
+
+
+def copy_checkpoint(source, partial, expected):
+    size, digest = expected
+    try:
+        actual_size = source.stat().st_size
+    except FileNotFoundError as exc:
+        raise InvalidCheckpoint('cached checkpoint is missing') from exc
+    if actual_size != size:
+        raise InvalidCheckpoint(f'expected {size} bytes, found {actual_size}')
+    # Hash during the copy: Drive is read once, and inference never mmaps it.
+    checksum, copied, reported = hashlib.sha256(), 0, time.monotonic()
+    with source.open('rb') as incoming, partial.open('wb') as outgoing:
+        while chunk := incoming.read(16 * 1024 * 1024):
+            outgoing.write(chunk)
+            checksum.update(chunk)
+            copied += len(chunk)
+            if time.monotonic() - reported >= 10:
+                logger.info('Staging %s: %.0f%%', source.name, 100 * copied / size)
+                reported = time.monotonic()
+    if copied != size or checksum.hexdigest() != digest:
+        raise InvalidCheckpoint('cached checkpoint SHA-256/size does not match the pinned weight')
+    # Digest already checked while copying; only parse the local file's header.
+    from safetensors import safe_open
+    try:
+        with safe_open(partial, framework='np') as checkpoint:
+            if not checkpoint.keys():
+                raise InvalidCheckpoint('checkpoint contains no tensors')
+    except Exception as exc:
+        raise InvalidCheckpoint(f'invalid Safetensors header: {exc}') from exc
+
+
+def stage_snapshot(snapshot, target, repo, revision, weights, small_files):
+    """Reuse validated local copies; repair only invalid persistent checkpoints once."""
+    from huggingface_hub import hf_hub_download
+    snapshot, target = Path(snapshot), Path(target).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    receipt = owned_path(target, '.validated.json')
+    try:
+        validated = json.loads(receipt.read_text(encoding='utf-8'))
+        if not isinstance(validated, dict):
+            validated = {}
+    except (OSError, ValueError):
+        validated = {}
+    pending = []
+    for name, expected in weights.items():
+        path = owned_path(target, name)
+        try:
+            record = {'sha256': expected[1], 'stat': fingerprint(path)}
+            if record != validated.get(name):
+                validate_checkpoint(path, expected)
+            if path.stat().st_size != expected[0]:
+                raise InvalidCheckpoint('wrong local checkpoint size')
+            validated[name] = record
+        except (FileNotFoundError, InvalidCheckpoint):
+            pending.append(name)
+    required = sum(weights[name][0] for name in pending)
+    if required and shutil.disk_usage(target).free < required + 1024 ** 3:
+        raise RuntimeError(f'Krea local staging needs {required / 1024**3:.1f} GiB plus 1 GiB free under '
+                           f'{target}. Persistent model weights were preserved; use a VM with more disk space.')
+    with tempfile.TemporaryDirectory(prefix='.stage-', dir=target) as directory:
+        scratch = Path(directory).resolve()
+        if scratch.parent != target:
+            raise ValueError('Krea staging scratch resolved outside its model folder')
+        partial = scratch / 'checkpoint.part'
+        for name in pending:
+            logger.info('Validating/staging %s (%.2f GiB)', name, weights[name][0] / 1024**3)
+            try:
+                copy_checkpoint(snapshot / name, partial, weights[name])
+            except InvalidCheckpoint as exc:
+                logger.warning('Invalid cached %s: %s. Re-downloading only this file once.', name, exc)
+                repaired = hf_hub_download(repo, name, revision=revision, force_download=True)
+                try:
+                    copy_checkpoint(Path(repaired), partial, weights[name])
+                except InvalidCheckpoint as failure:
+                    raise RuntimeError(f'Krea checkpoint still invalid after one download: {name}. '
+                                       'Check Drive storage/quota and retry; other cached models were preserved.') from failure
+            destination = owned_path(target, name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            partial.replace(destination)
+            validated[name] = {'sha256': weights[name][1], 'stat': fingerprint(destination)}
+            # Save per-file so a later interrupted copy can reuse completed files.
+            marker = scratch / 'validated.json'
+            marker.write_text(json.dumps(validated, indent=2) + '\n', encoding='utf-8')
+            marker.replace(receipt)
+            logger.info('Validated local checkpoint: %s', name)
+        for name in small_files:
+            destination = owned_path(target, name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(snapshot / name, destination)
+        marker = scratch / 'validated.json'
+        marker.write_text(json.dumps(validated, indent=2) + '\n', encoding='utf-8')
+        marker.replace(receipt)
+    logger.info('Krea local model files ready: %s (%d checkpoint(s) reused)', target, len(weights) - len(pending))
+    return target

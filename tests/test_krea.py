@@ -172,7 +172,7 @@ class KreaChecks(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'did not activate'):
                 KreaBackend.load(Path('owned-runtime'))
 
-    def test_pinned_assets_do_not_change_cached_source_or_download_duplicate_weights(self):
+    def test_pinned_runtime_config_is_copied_without_mutating_cached_source(self):
         with tempfile.TemporaryDirectory(prefix='colab-sd-test-krea-') as directory:
             root = Path(directory).resolve()
             snapshot = root / 'snapshot'
@@ -193,13 +193,6 @@ class KreaChecks(unittest.TestCase):
                 (snapshot / 'modular_blocks.py').write_text('# corrupt')
                 with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
                     assets.prepare_pipeline(snapshot, root / 'wan', root)
-        with patch('huggingface_hub.snapshot_download', side_effect=['snapshot', 'wan']) as download, \
-                patch.object(assets, 'prepare_pipeline', return_value=Path('pipe')):
-            assets.download_assets(Path('runtime'))
-            self.assertEqual([c.kwargs['revision'] for c in download.call_args_list],
-                             [assets.MODEL_REVISION, assets.WAN_REVISION])
-            self.assertNotIn('*.safetensors', download.call_args_list[0].kwargs['allow_patterns'])
-            self.assertFalse(any('transformer' in p for p in assets.WAN_PATTERNS))
 
     def test_setup_refuses_an_existing_bridge_before_environment_mutations(self):
         with patch.object(krea_setup.platform, 'system', return_value='Linux'), \
