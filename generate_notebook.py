@@ -7,6 +7,25 @@ from bridge_protocol import OUTPUT_RESOLUTIONS
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
+STREAMING_GUIDE = """
+## Video transport and quality
+Use the updated TouchDesigner component with this notebook. On **Streaming**, choose
+**WebRTC (automatic fallback)** for a reachable direct/TURN media path, or
+**WebSocket images (JPEG / WebP)** for image delivery through the normal socket.
+On **StreamDiffusion**, **Video Quality → Compact WebP (12 KB target)** reduces traffic
+on constrained links; start with **Video Buffer → 3 (balanced)**. These controls apply
+to every backend and to Windows/Linux workstations as well as Colab.
+Compact keeps native generation/output dimensions but is lossy and can soften detail.
+The target is best effort for noisy images. Unsupported encoder/decoder versions use
+Fast JPEG instead. Balanced JPEG remains the default; WebRTC uses VP8 independently.
+Changing image quality does not reload models or rebuild TensorRT engines, and does
+not increase a model's generation rate.
+
+An approved Tailscale userspace TCP route can carry WebSocket images, but does not
+transparently carry native WebRTC UDP. Normal notebook launches still use Cloudflare;
+Tailscale setup and private launch settings are described in the project README.
+"""
+
 
 def code_cell(source):
     return {"cell_type": "code", "execution_count": None, "metadata": {},
@@ -129,7 +148,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         finally:
             bridge_session.stop()
     """).replace('RESOLUTION_OPTIONS', json.dumps([f'{w}x{h}' for w, h in OUTPUT_RESOLUTIONS]))
-    cells = [{"cell_type": "markdown", "metadata": {}, "source": intro.splitlines(keepends=True)}]
+    cells = [{"cell_type": "markdown", "metadata": {}, "source": (intro + STREAMING_GUIDE).splitlines(keepends=True)}]
     cells.extend(code_cell(source) for source in (gpu_check, setup, write_server, launch))
     return {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"gpuType": "T4", "provenance": []},
             "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 0}
