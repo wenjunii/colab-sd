@@ -164,6 +164,8 @@ class BridgeSession:
                     environment[key] = value
             environment['BRIDGE_BACKEND'] = self.backend
             if self.backend == 'krea':
+                from krea_quant import configure_allocator
+                configure_allocator(environment)
                 # Read by Hub at import time in this child, before any downloads.
                 environment['HF_HUB_DISABLE_SYMLINKS'] = '1'
                 environment['HF_HUB_DISABLE_SHARED_BLOBS'] = '1'

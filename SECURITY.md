@@ -57,7 +57,11 @@ The installer uses its own Python environment with Torch 2.13.0 CUDA 13, Diffuse
 
 Krea reuses the same worker, single-controller slot, token gate and ACK-limited delivery as the other modes. It waits for a controller configuration and ACK negotiation before inference, queues at most one decoded chunk, and stops generation retries after failure. Clip reset/reconnect cleanup runs behind owned GPU work. Its Colab tunnel has no token by default, matching the other notebooks. Setup refuses an already occupied bridge port and does not terminate other servers.
 
-The INT8 input-shape adapter wraps only the loaded Krea transformer's `Linear8bitLt` modules. It flattens rank-4/higher activations for matmul and restores their output shape; it does not replace quantized weights, disable outlier handling, patch installed vendor code or alter global Torch functions. The optional GPU validation command uses the existing runtime and model cache; it does not install another environment or start a public listener.
+The INT8 input-shape adapter wraps only the loaded Krea transformer's `Linear8bitLt` modules. It flattens rank-4/higher activations for matmul and restores their output shape without replacing quantized weights, patching installed vendor code or altering global Torch functions. Separately, the startup Fast profile uses outlier threshold 0 (no FP16 outlier correction); Balanced retains threshold 6. Fast can change image quality. Invalid profiles fail before model downloads/loading. The engine label reports the selected profile.
+
+Only Krea children default to expandable CUDA allocator segments; either explicit user allocator alias is retained and the launcher parent/other backends are unchanged. The warning filter suppresses only duplicate instances of the exact pinned bitsandbytes cast-warning template, retaining the first per dtype and all other diagnostics. Optional GPU validation/benchmark commands use the existing runtime and model cache; they do not install another environment or start a public listener. Benchmark reports/images are retained in the requested output folder and existing reports are not overwritten.
+
+Fast also applies PyTorch's Conv3d-only VAE weight memory-format conversion; dimensions and values are retained and non-convolution parameters are untouched. Balanced loads the original layout. No new dependency or model distribution is introduced. The README records matched native-resolution A100 timings; these short comparisons do not establish long-session quality or cold-start reliability.
 
 ## Workstation access
 

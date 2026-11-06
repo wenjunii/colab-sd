@@ -70,10 +70,12 @@ def check_tokenizer(pipe):
 
 
 class KreaBackend:
-    def __init__(self, pipe, state_factory, torch_module, clip_blocks=64):
+    def __init__(self, pipe, state_factory, torch_module, clip_blocks=64, int8_profile='balanced'):
         if isinstance(clip_blocks, bool) or not isinstance(clip_blocks, int) or not 1 <= clip_blocks <= 64:
             raise ValueError('Krea clip blocks must be between 1 and 64')
         self.pipe, self.state_factory, self.torch = pipe, state_factory, torch_module
+        from krea_quant import validate_int8_profile
+        self.int8_profile = validate_int8_profile(int8_profile)
         self.clip_blocks = clip_blocks
         self.frames = deque()
         self.prompt, self.seed = '', 42
@@ -102,12 +104,21 @@ class KreaBackend:
         # Shared stateful-generation progress fields understood by the TD bridge.
         return {'world_phase': phase, 'world_status': status,
                 'krea_block': self.block_index, 'krea_clip': self.clip_index,
-                'krea_clip_blocks': self.clip_blocks, 'krea_paused': self.paused}
+                'krea_clip_blocks': self.clip_blocks, 'krea_paused': self.paused,
+                'krea_int8_profile': self.int8_profile}
+
+    @property
+    def engine(self):
+        from krea_quant import int8_engine_label
+        return int8_engine_label(self.int8_profile)
 
     @classmethod
     def load(cls, root, clip_blocks=64):
         import os
         import torch
+        from krea_quant import INT8_THRESHOLDS, validate_int8_profile, limit_cast_warnings
+        profile = validate_int8_profile(os.environ.get('KREA_INT8_PROFILE', 'fast'))
+        limit_cast_warnings()
         gpu_preflight(torch)
         # This server uses only PyTorch attention and the pinned HF source.
         os.environ['DISABLE_SAGEATTENTION'] = '1'
@@ -123,7 +134,8 @@ class KreaBackend:
         transformer = AutoModel.from_pretrained(
             str(snapshot), subfolder='transformer', trust_remote_code=True,
             local_files_only=True, dtype=torch.bfloat16, use_safetensors=True,
-            quantization_config=BitsAndBytesConfig(load_in_8bit=True), device_map='cuda')
+            quantization_config=BitsAndBytesConfig(load_in_8bit=True,
+                llm_int8_threshold=INT8_THRESHOLDS[profile]), device_map='cuda')
         if not getattr(transformer, 'is_loaded_in_8bit', False):
             raise RuntimeError('Requested Krea INT8 transformer did not activate')
         from krea_quant import prepare_int8_linears
@@ -137,9 +149,12 @@ class KreaBackend:
             use_safetensors={'text_encoder': True, 'vae': True})
         pipe.update_components(transformer=transformer)
         require_components(pipe, ('transformer', 'text_encoder', 'tokenizer', 'vae', 'scheduler'))
+        from krea_quant import prepare_vae_layout
+        prepare_vae_layout(pipe.vae, profile)
         cpu_offload(pipe.text_encoder, execution_device=torch.device('cuda'), offload_buffers=True)
         # Projection fusion is intentionally absent: it can replace INT8 linears.
-        return cls(pipe, PipelineState, torch, clip_blocks)
+        logger.info('Krea INT8 profile: %s (outlier threshold %s)', profile, INT8_THRESHOLDS[profile])
+        return cls(pipe, PipelineState, torch, clip_blocks, int8_profile=profile)
 
     @property
     def can_generate(self):
