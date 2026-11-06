@@ -16,6 +16,7 @@ DEPENDENCIES = (
     'einops==0.8.2', 'ftfy==6.3.1', 'sentencepiece==0.2.1', 'imageio==2.38.1',
     'fastapi==0.162.0', 'uvicorn==0.49.0', 'websockets==16.0',
     'opencv-python-headless==4.13.0.92', 'pillow==13.0.0',
+    'aiortc==1.15.0', 'av==17.1.0',
 )
 TORCH = 'torch==2.13.0'
 TORCH_INDEX = 'https://download.pytorch.org/whl/cu130'

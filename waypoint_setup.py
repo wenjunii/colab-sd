@@ -14,6 +14,7 @@ DEPENDENCIES = (
     f'world_engine @ git+https://github.com/Overworldai/world_engine.git@{RUNTIME_REVISION}',
     'fastapi==0.162.0', 'uvicorn==0.49.0', 'websockets==16.0',
     'opencv-python-headless==4.13.0.92', 'pillow==13.0.0',
+    'aiortc==1.15.0', 'av==17.1.0',
     'transformers==5.10.1', 'huggingface-hub==1.7.2',
 )
 # Compatible with the existing Hub 1.7 / Transformers 5 pins. Newer Diffusers

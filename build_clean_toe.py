@@ -8,6 +8,8 @@ import argparse
 import re
 from bridge_protocol import OUTPUT_PRESETS
 
+WEBRTC_CODE = (Path(__file__).resolve().parent / 'td_webrtc_callbacks.py').read_text(encoding='utf-8')
+
 
 def resolution_parameter():
     presets = (*OUTPUT_PRESETS, ('1280x720', '1280 x 720 (Waypoint only)', 1280, 720),
@@ -37,6 +39,7 @@ def onCook(scriptOp):
     disp_mode = str(p_mode.eval()) if p_mode is not None else 'ai'
     # Fetch latest reassembled frame from parent component storage
     data = parent().fetch('last_frame_bytes', None)
+    rtc_video = op('webrtc_video') if parent().fetch('rtc_video_active', False) else None
     if not data:
         for name in ['websocket1_callbacks', 'websocket1_callbacks1']:
             cb = op(name)
@@ -44,7 +47,7 @@ def onCook(scriptOp):
                 data = cb.module.last_frame_bytes
                 break
     
-    if not data and disp_mode != 'input':
+    if not data and not rtc_video and disp_mode != 'input':
         return
         
     try:
@@ -52,6 +55,11 @@ def onCook(scriptOp):
             decoded_frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
             decoded_bytes = data
         ai_bgr = decoded_frame if data and disp_mode != 'input' else None
+        if rtc_video and disp_mode != 'input':
+            arr = rtc_video.numpyArray()
+            if arr is not None:
+                rgb = (np.clip(arr[::-1, :, :3], 0, 1) * 255).astype(np.uint8)
+                ai_bgr = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2BGR)
         if ai_bgr is None and disp_mode != 'input':
             return
             
@@ -142,6 +150,10 @@ def onConnect(dat):
     print('[StreamDiffusion] WebSocket connected to server.')
 
 def onDisconnect(dat):
+    rtc_callbacks = op('webrtc_callbacks')
+    if rtc_callbacks and hasattr(rtc_callbacks, 'module'):
+        rtc_callbacks.module.reset()
+        rtc_callbacks.module.info('Disconnected')
     p_status = getattr(parent().par, 'Status', None)
     if p_status is not None:
         p_status.val = last_error or 'Disconnected'
@@ -202,6 +214,21 @@ def onReceiveText(dat, rowIndex, message):
         if not isinstance(data, dict):
             return
         msg_type = data.get('type', '')
+        if msg_type in ('rtc_offer', 'rtc_closed', 'rtc_state'):
+            callback = op('webrtc_callbacks')
+            if callback and hasattr(callback, 'module'):
+                callback.module.handle(data)
+            return
+        if data.get('video_transport') == 'webrtc':
+            if data.get('rtc_submitted', 0) > 0 and parent().fetch('rtc_submitted_at', None) is None:
+                parent().store('rtc_submitted_at', time.perf_counter())
+            for field in ('frame_bytes', 'delivery_ms', 'display_ms', 'credit_wait_ms'):
+                data.pop(field, None)
+            for name, value in (('Framesize', 'RTP video'), ('Deliverytime', '-- ms'),
+                                ('Cooktime', '-- ms'), ('Streamwait', '-- ms')):
+                par = getattr(parent().par, name, None)
+                if par is not None:
+                    par.val = value
         if msg_type == 'welcome' and data.get('protocol') != 1:
             last_error = 'Bridge versions differ: update the server and TouchDesigner component'
             parent().store('server_ready', False)
@@ -273,6 +300,7 @@ def onReceiveText(dat, rowIndex, message):
             parent().store('connected', True)
             parent().store('handshake_complete', True)
             parent().store('frame_ack_supported', bool(data.get('frame_ack', False)))
+            parent().store('video_transports', data.get('video_transports', ['websocket']))
             parent().store('resolution_locked', bool(data.get('resolution_locked', False)))
             if 'width' in data and 'height' in data:
                 width, height = int(data['width']), int(data['height'])
@@ -457,8 +485,16 @@ def send_client_options():
     quality = str(quality_par.eval()) if quality_par is not None else 'balanced'
     ws = op('websocket1')
     if ws:
-        ws.sendText(json.dumps({'type': 'client_options', 'frame_ack': True,
-                               'frame_window': window, 'video_quality': quality}))
+        options = {'type': 'client_options', 'frame_ack': True,
+                   'frame_window': window, 'video_quality': quality}
+        transport_par = getattr(parent().par, 'Videotransport', None)
+        if transport_par is not None:
+            transport = str(transport_par.eval())
+            options['video_transport'] = transport if transport in parent().fetch('video_transports', []) else 'websocket'
+            readout = getattr(parent().par, 'Transportstate', None)
+            if readout is not None and options['video_transport'] == 'websocket':
+                readout.val = 'WebSocket video'
+        ws.sendText(json.dumps(options))
 
 def output_size():
     p_resolution = getattr(parent().par, 'Resolution', None)
@@ -686,6 +722,9 @@ def handle_audio_reactivity(now):
 def onFrameStart(frame):
     global frame_count, frame_id_seq
     now = time.perf_counter()
+    rtc_callback = op('webrtc_callbacks')
+    if rtc_callback and hasattr(rtc_callback, 'module'):
+        rtc_callback.module.tick(now)
     previous_tick = parent().fetch('display_tick', now)
     client_frame_ms = max(0.0, (now - previous_tick) * 1000)
     parent().store('display_tick', now)
@@ -696,7 +735,8 @@ def onFrameStart(frame):
         parent().store('display_pending', False)
         display_started = time.perf_counter()
         receiver = op('script_receiver')
-        if receiver:
+        if receiver and not (parent().fetch('rtc_video_active', False)
+                             and display_par is not None and display_par.eval() == 'ai'):
             receiver.cook(force=True)
         display_ms = (time.perf_counter() - display_started) * 1000
         acknowledgements = parent().fetch('pending_frame_acks', [])
@@ -903,7 +943,11 @@ def onValueChange(par, prev):
                 normalized = urlunsplit((scheme, parsed.netloc, path, parsed.query, ''))
                 if normalized != value:
                     par.val = normalized
-        elif par.name in ('Framewindow', 'Videoquality'):
+        elif par.name in ('Framewindow', 'Videoquality', 'Videotransport'):
+            if par.name == 'Videotransport':
+                cb = op('webrtc_callbacks')
+                if cb:
+                    cb.module.reset()
             parent().store('client_options_pending', True)
         elif par.name == 'Resolution' and parent().fetch('resolution_locked', False):
             width, height = parent().fetch('server_resolution', (512, 512))
@@ -1079,7 +1123,9 @@ def save_snapshot():
 '''
 
 CPARM_CONTENT = f'''?
-pages 4 StreamDiffusion World Krea LTX
+pages 5 StreamDiffusion Streaming World Krea LTX
+772804879 Videotransport "Video Transport" 1 1 0 0 1 1 1 2 0 "" "" Streaming 4097 2 webrtc "WebRTC (automatic fallback)" websocket "WebSocket JPEG" 0
+772804868 Transportstate "Active Video Transport" 1 1 0 0 1 1 1 2 0 "" "" Streaming 1
 772804879 Serverlocation "Server Location" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 colab "Google Colab" workstation "RTX Workstation (Windows / Linux)" 0
 772804868 Serverurl "Server WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
 772804868 Accesstoken "Workstation Access Token" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 2
@@ -1145,7 +1191,9 @@ pages 4 StreamDiffusion World Krea LTX
 '''
 
 PARM_CONTENT = '''?
-pageindex 0 4
+pageindex 0 5
+Videotransport 67108928 webrtc
+Transportstate 67109184 "Disconnected"
 Serverlocation 67108928 colab
 Serverurl 67108928 ""
 Accesstoken 67108928 ""
@@ -1280,6 +1328,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
         'parexec_controls.text': PAREXEC_CODE,
         'exec_send_frame.text': EXEC_SEND_FRAME_CODE,
         'latency_callbacks.text': LATENCY_CODE,
+        'webrtc_callbacks.text': WEBRTC_CODE,
     }
     for name, code in callbacks.items():
         compile(code, name, 'exec')
@@ -1301,7 +1350,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'latency_callbacks.n').write_text(
         'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused Ltxcontinuous Ltxchain Ltxrefresh'
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Videotransport Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused Ltxcontinuous Ltxchain Ltxrefresh'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')
@@ -1317,11 +1366,25 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
         'resolutionw 17 256 max(1,round(op("null_cam").width*256/max(op("null_cam").width,op("null_cam").height)))\n'
         'resolutionh 17 256 max(1,round(op("null_cam").height*256/max(op("null_cam").width,op("null_cam").height)))\n'
         'outputaspect 0 resolution\n?\n', encoding='utf-8', newline='\n')
+    native_nodes = {
+        'webrtc1.n': 'DAT:webrtc\ntile -350 450 130 90\nflags = parlanguage 0\nend\n',
+        'webrtc1.parm': '?\nactive 0 off\ncallbacks 0 webrtc_callbacks\n?\n',
+        'webrtc_callbacks.n': 'DAT:text\ntile 0 450 130 90\nflags = parlanguage 0\ndock webrtc1\nend\n',
+        'webrtc_callbacks.parm': '?\nlanguage 0 python\n?\n',
+        'webrtc_video.n': 'TOP:videostreamin\ntile 0 600 130 90\nflags = parlanguage 0\nend\n',
+        'webrtc_video.parm': '?\nactive 0 off\nmode 0 webrtc\nwebrtc 0 webrtc1\ndisablebuffering 0 on\nvideobufferframes 0 1\n?\n',
+        'transport_output.n': 'TOP:switch\ntile 180 150 130 90\nflags = parlanguage 0\ninputs\n{\n0 script_receiver\n1 webrtc_video\n}\nend\n',
+        'transport_output.parm': '?\nindex 17 0 int(parent().fetch("rtc_video_active",False))*int(parent().par.Displaymode.eval()=="ai")\n?\n',
+        'null_output.n': 'TOP:null\ntile 250 150 130 90\nflags = parlanguage 0\ninputs\n{\n0 transport_output\n}\nend\n',
+    }
+    for name, content in native_nodes.items():
+        (component / name).write_text(content, encoding='utf-8', newline='\n')
     for name, code in callbacks.items():
         write_text_file(component / name, code)
     entries = [line.strip() for line in toc.read_text(encoding='utf-8').splitlines() if line.strip()]
     for name in ('in_audio.n', 'in_audio.parm', 'fit_send.n', 'fit_send.parm',
-                 'latency_ws.n', 'latency_ws.parm', 'latency_callbacks.n', 'latency_callbacks.parm', 'latency_callbacks.text'):
+                 'latency_ws.n', 'latency_ws.parm', 'latency_callbacks.n', 'latency_callbacks.parm', 'latency_callbacks.text',
+                 *native_nodes, 'webrtc_callbacks.text'):
         entry = 'project1/StreamDiffusion_Remote/' + name
         if entry not in entries:
             entries.append(entry)

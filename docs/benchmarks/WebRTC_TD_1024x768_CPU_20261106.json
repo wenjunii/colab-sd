@@ -1,0 +1,27 @@
+{
+  "date": "2026-11-06",
+  "purpose": "Native TouchDesigner WebRTC transport validation with a synthetic CPU video source; not a diffusion benchmark",
+  "platform": "Windows",
+  "touchdesigner_build": "2025.32820",
+  "aiortc": "1.15.0",
+  "pyav": "17.1.0",
+  "codec": "VP8",
+  "network": "Two processes on the same computer; no TURN service or remote Colab connection",
+  "source_fps_limit": 12,
+  "width": 1024,
+  "height": 768,
+  "decoded_frames": 411,
+  "effective_fps_readout": 11.7,
+  "active_transport": "WebRTC / VP8 (receiving)",
+  "output_bottom_rgb_mean": [0.0, 0.8592363595962524, 0.0],
+  "output_top_rgb_mean": [0.8543460965156555, 0.0, 0.0],
+  "orientation": "Correct: native TOP bottom row green, top row red, matching the BGR source",
+  "recursive_operator_errors": "",
+  "scope": "Shared server output and native TD receiver; CPU tests additionally exercise control messages, bounded frame replacement and JPEG fallback without model reload",
+  "limitations": [
+    "No neural model was loaded for this transport check",
+    "A100 generation speed is unchanged and was not measured",
+    "Remote Colab, TURN relay and cross-device Tailscale paths remain unvalidated",
+    "Workstation GPU generation still requires backend-specific hardware validation"
+  ]
+}

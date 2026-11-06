@@ -56,7 +56,7 @@ def sync(message, root=PROJECT_DIR, check_only=False, dry_run=False, merge=False
         raise SyncError('--admin requires --merge')
     if dry_run:
         print(f'Operate on this checkout only: {root}. Shared TD/MCP services are not managed.')
-        print('Dry run: build both TouchDesigner archives; regenerate all four Colab notebooks; run tests and notebook checks.')
+        print('Dry run: build both TouchDesigner archives with native WebRTC; regenerate all four Colab notebooks; run tests and notebook checks.')
         print('Use private build/test scratch and remove only that run\'s temporary files when checks finish.')
         if not check_only:
             print('Then stage changes, commit the supplied message as one argument, and push the current branch.')
@@ -102,7 +102,7 @@ def sync(message, root=PROJECT_DIR, check_only=False, dry_run=False, merge=False
         body_path = Path(directory).resolve() / 'body.txt'
         assert body_path.parent.is_relative_to(Path(tempfile.gettempdir()).resolve())
         body_path.write_text(pr_body if pr_body is not None else
-                             message + '\n\nValidation: rebuilt .toe/.tox, regenerated the StreamDiffusion, Waypoint, Krea and LTX Colab notebooks, and passed the project checks.\n',
+                             message + '\n\nValidation: rebuilt .toe/.tox with native WebRTC, regenerated the StreamDiffusion, Waypoint, Krea and LTX Colab notebooks, and passed the project checks (including CPU WebRTC negotiation/decoding/fallback).\n',
                              encoding='utf-8')
         created = run_cmd(['gh', 'pr', 'create', '--title', message, '--body-file', str(body_path),
                            '--base', 'main', '--head', sync_branch], root)

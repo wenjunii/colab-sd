@@ -1,0 +1,5 @@
+DAT:text
+tile 0 450 130 90
+flags = parlanguage 0
+dock webrtc1
+end

@@ -8,6 +8,7 @@ __pycache__/
 *$py.class
 *.so
 .env
+webrtc-ice.local.json
 venv/
 .venv/
 env/

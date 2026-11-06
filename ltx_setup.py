@@ -15,7 +15,7 @@ TORCH_INDEX = 'https://download.pytorch.org/whl/cu130'
 TORCH_PACKAGES = ('torch==2.11.0', 'torchvision==0.26.0', 'torchaudio==2.11.0')
 DEPENDENCIES = ('transformers==5.14.1', 'huggingface-hub==1.33.0', 'accelerate==1.12.0',
                 'safetensors==0.8.0', 'einops==0.8.2', 'colour-science==0.4.7',
-                'scipy==1.17.1', 'av==19.0.2', 'openimageio==3.2.2.0',
+                'scipy==1.17.1', 'av==17.1.0', 'aiortc==1.15.0', 'openimageio==3.2.2.0',
                 'cloudpickle==3.1.2', 'uv-build==0.9.30', 'pillow==13.0.0',
                 'fastapi==0.162.0', 'uvicorn==0.49.0', 'websockets==16.0',
                 'opencv-python-headless==4.13.0.92')

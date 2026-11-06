@@ -59,6 +59,12 @@ class ProjectToolsChecks(unittest.TestCase):
                 toc = (Path(cwd) / 'StreamDiffusion_Remote.tox.toc').read_text().splitlines()
                 self.assertTrue({'.n', '.parm', '.cparm', '.build'}.issubset(toc))
                 self.assertNotIn('noise1', (Path(cwd) / 'StreamDiffusion_Remote.tox.dir/.n').read_text())
+                packed = Path(cwd) / 'StreamDiffusion_Remote.tox.dir'
+                expression = next(line.split()[3] for line in (packed / 'transport_output.parm').read_text().splitlines()
+                                  if line.startswith('index '))
+                compile(expression, 'native output switch', 'eval')
+                self.assertIn('webrtc_video', (packed / 'transport_output.n').read_text())
+                self.assertIn('webrtc1.n', toc)
                 self.assertIn('noise1', (Path(cwd) / 'colab-sd.toe.dir/project1/StreamDiffusion_Remote.n').read_text())
             (Path(cwd) / command[-1]).write_bytes(b'x' * 256)
             return SimpleNamespace(returncode=0, stdout='', stderr='')
@@ -80,7 +86,7 @@ class ProjectToolsChecks(unittest.TestCase):
             self.assertEqual(assignments[variable], (generate_notebook.PROJECT_DIR / filename).read_text(encoding='utf-8'))
 
     def test_notebook_check_detects_source_drift(self):
-        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py', 'tensorrt_backend.py', 'sdxl_stream.py'):
+        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py', 'tensorrt_backend.py', 'sdxl_stream.py', 'webrtc_transport.py'):
             (self.root / filename).write_text('# initial source\n')
         generate_notebook.generate_notebook(self.root)
         generate_notebook.generate_notebook(self.root, check=True)

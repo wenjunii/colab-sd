@@ -100,3 +100,12 @@ project1/StreamDiffusion_Remote/latency_ws.parm
 project1/StreamDiffusion_Remote/latency_callbacks.n
 project1/StreamDiffusion_Remote/latency_callbacks.parm
 project1/StreamDiffusion_Remote/latency_callbacks.text
+project1/StreamDiffusion_Remote/webrtc1.n
+project1/StreamDiffusion_Remote/webrtc1.parm
+project1/StreamDiffusion_Remote/webrtc_callbacks.n
+project1/StreamDiffusion_Remote/webrtc_callbacks.parm
+project1/StreamDiffusion_Remote/webrtc_video.n
+project1/StreamDiffusion_Remote/webrtc_video.parm
+project1/StreamDiffusion_Remote/transport_output.n
+project1/StreamDiffusion_Remote/transport_output.parm
+project1/StreamDiffusion_Remote/webrtc_callbacks.text
