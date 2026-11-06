@@ -154,6 +154,8 @@ class KreaChecks(unittest.TestCase):
     def test_loader_requests_int8_local_components_and_only_text_encoder_offload(self):
         transformer = SimpleNamespace(is_loaded_in_8bit=True)
         pipe = SimpleNamespace(vae=SimpleNamespace(clear_cache=Mock()), text_encoder=object(),
+                               tokenizer=Mock(return_value={'input_ids': np.ones((1, 8), dtype=np.int64)}),
+                               scheduler=object(), transformer=transformer,
                                load_components=Mock(), update_components=Mock())
         diffusers = SimpleNamespace(AutoModel=SimpleNamespace(from_pretrained=Mock(return_value=transformer)),
                     BitsAndBytesConfig=Mock(), ModularPipeline=SimpleNamespace(from_pretrained=Mock(return_value=pipe)))
@@ -166,7 +168,8 @@ class KreaChecks(unittest.TestCase):
             self.assertTrue(kwargs['local_files_only'])
             self.assertEqual(kwargs['device_map'], 'cuda')
             diffusers.BitsAndBytesConfig.assert_called_once_with(load_in_8bit=True)
-            self.assertEqual(pipe.load_components.call_args.kwargs['names'], ['text_encoder', 'tokenizer', 'vae', 'scheduler'])
+            self.assertEqual([call.kwargs['names'] for call in pipe.load_components.call_args_list],
+                             [['tokenizer', 'scheduler'], ['text_encoder', 'vae']])
             self.assertIs(accelerate.cpu_offload.call_args.args[0], pipe.text_encoder)
             transformer.is_loaded_in_8bit = False
             with self.assertRaisesRegex(RuntimeError, 'did not activate'):
@@ -270,7 +273,8 @@ class KreaChecks(unittest.TestCase):
                 ast.parse(''.join(cell['source']))
         setup = ast.parse(''.join(book['cells'][2]['source']))
         sources = next(ast.literal_eval(node.value) for node in setup.body
-                       if isinstance(node, ast.Assign) and node.targets[0].id == 'sources')
+                       if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id == 'sources')
         for name in notebook.SOURCES:
             self.assertEqual(sources[name], (notebook.PROJECT_DIR / name).read_text(encoding='utf-8'))
         self.assertIn("backend='krea'", ''.join(book['cells'][3]['source']))

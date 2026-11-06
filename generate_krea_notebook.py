@@ -56,11 +56,20 @@ Before loading, the server copies weights into `/content/colab-sd-krea/model-fil
 checks all nine pinned checkpoint sizes/SHA-256 hashes, and parses their Safetensors
 headers. Progress is logged during large copies. Inference loads these VM-local files
 instead of memory-mapping Drive. A validated local copy is reused on the same VM.
-An invalid cached checkpoint is downloaded again once, individually; valid models and
+All tokenizer, scheduler, configuration and runtime files also have pinned sizes/hashes.
+Old Drive text links are resolved only inside the pinned repository's Hub blob stores;
+valid cached blobs are reused before requesting a download. New Krea child processes
+disable Hub symlink/shared-blob layouts, without changing other backend environments.
+An invalid cached file is downloaded again once, individually; valid models and
 the isolated Python environment are preserved. A persistent failure stops startup with
 the filename; it does not delete the Drive model folder or retry indefinitely.
 If an older script failed with `header too large`, rerun this updated Step 2, then Step 3.
 Saved notebook copies embed their scripts and do not automatically receive this fix.
+If tokenizer creation failed (`JSONDecodeError` / `NoneType is not callable`), stop
+the current Step 3 cell first, then rerun updated Steps 2 and 3 on the same VM/cache.
+Keep the runtime connected: validated local weight copies are reused. The tokenizer
+and scheduler must load and pass a tokenization check before transformer loading;
+every required component is checked before the server advertises readiness.
 
 [HF runtime/model and declared license](https://huggingface.co/krea/krea-realtime-video/tree/9a2ceea280e5d584c6a28d384a9c19e38c810f8c) ·
 [Wan components/license](https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers/tree/38ec498cb3208fb688890f8cc7e94ede2cbd7f68) ·
@@ -94,6 +103,9 @@ Saved notebook copies embed their scripts and do not automatically receive this 
             raise RuntimeError('An active bridge uses port 8000. Use a fresh GPU runtime for Krea.')
         runtime_root = Path('/content/colab-sd-krea')
         runtime_root.mkdir(exist_ok=True)
+        # Hub reads these at import time; avoid symlink cache layouts on Drive.
+        os.environ['HF_HUB_DISABLE_SYMLINKS'] = '1'
+        os.environ['HF_HUB_DISABLE_SHARED_BLOBS'] = '1'
     ''')
     sources = {name: (Path(project_dir) / name).read_text(encoding='utf-8') for name in SOURCES}
     setup += 'sources = ' + repr(sources) + '\n'

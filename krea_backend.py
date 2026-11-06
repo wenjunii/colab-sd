@@ -50,6 +50,25 @@ def gpu_preflight(torch_module):
     return {'gpu': torch_module.cuda.get_device_name(), 'vram_gib': round(total / 1024 ** 3, 1)}
 
 
+def require_components(pipe, names):
+    # Modular Diffusers logs some component failures and leaves None behind.
+    # Never advertise readiness after a required component failed to load.
+    missing = [name for name in names if getattr(pipe, name, None) is None]
+    if missing:
+        raise RuntimeError('Krea required component(s) failed to load: ' + ', '.join(missing))
+
+
+def check_tokenizer(pipe):
+    require_components(pipe, ('tokenizer', 'scheduler'))
+    try:
+        tokens = pipe.tokenizer(['a cinematic landscape'], padding='max_length', truncation=True,
+                                max_length=8, return_tensors='pt')
+        if tuple(tokens['input_ids'].shape) != (1, 8):
+            raise ValueError('tokenizer returned an invalid token shape')
+    except Exception as exc:
+        raise RuntimeError('Krea tokenizer readiness check failed; inspect tokenizer cache files') from exc
+
+
 class KreaBackend:
     def __init__(self, pipe, state_factory, torch_module, clip_blocks=64):
         if isinstance(clip_blocks, bool) or not isinstance(clip_blocks, int) or not 1 <= clip_blocks <= 64:
@@ -98,20 +117,23 @@ class KreaBackend:
         from diffusers.modular_pipelines import PipelineState
         from krea_assets import download_assets
         snapshot, pipeline_folder = download_assets(root)
+        pipe = ModularPipeline.from_pretrained(str(pipeline_folder), trust_remote_code=True)
+        pipe.load_components(names=['tokenizer', 'scheduler'], trust_remote_code=False, local_files_only=True)
+        check_tokenizer(pipe)
         transformer = AutoModel.from_pretrained(
             str(snapshot), subfolder='transformer', trust_remote_code=True,
             local_files_only=True, dtype=torch.bfloat16, use_safetensors=True,
             quantization_config=BitsAndBytesConfig(load_in_8bit=True), device_map='cuda')
         if not getattr(transformer, 'is_loaded_in_8bit', False):
             raise RuntimeError('Requested Krea INT8 transformer did not activate')
-        pipe = ModularPipeline.from_pretrained(str(pipeline_folder), trust_remote_code=True)
         pipe.load_components(
-            names=['text_encoder', 'tokenizer', 'vae', 'scheduler'],
+            names=['text_encoder', 'vae'],
             trust_remote_code=False, local_files_only=True,
             dtype={'text_encoder': torch.bfloat16, 'vae': torch.float16},
             device_map={'text_encoder': 'cpu', 'vae': 'cuda'},
             use_safetensors={'text_encoder': True, 'vae': True})
         pipe.update_components(transformer=transformer)
+        require_components(pipe, ('transformer', 'text_encoder', 'tokenizer', 'vae', 'scheduler'))
         cpu_offload(pipe.text_encoder, execution_device=torch.device('cuda'), offload_buffers=True)
         # Projection fusion is intentionally absent: it can replace INT8 linears.
         return cls(pipe, PipelineState, torch, clip_blocks)

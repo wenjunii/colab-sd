@@ -26,6 +26,28 @@ RUNTIME_HASHES = {
 WAN_PATTERNS = ('README.md', 'LICENSE*', 'text_encoder/*.json', 'text_encoder/*.safetensors', 'tokenizer/*',
                 'vae/*.json', 'vae/*.safetensors', 'scheduler/*.json')
 
+# Exact sizes/digests of the remaining files at the pinned revisions, including
+# the tokenizer's two LFS files. Metadata must be checked as well as weights.
+KREA_FILES = {name: (size, RUNTIME_HASHES[name]) for name, size in (
+    ('__init__.py', 0), ('before_denoise.py', 47888), ('decoders.py', 5310), ('denoise.py', 10081),
+    ('encoders.py', 10766), ('modular_blocks.py', 1409), ('modular_config.json', 153),
+    ('modular_model_index.json', 1519), ('transformer/__init__.py', 0),
+    ('transformer/attention.py', 11016), ('transformer/causal_model.py', 49526),
+    ('transformer/config.json', 372), ('transformer/diffusion_pytorch_model.safetensors.index.json', 96805),
+    ('transformer/model.py', 32233))}
+KREA_FILES['README.md'] = (13446, '485ab341d1e594966fc25fa209c169f7d95586f3ac57ab016a51b114ec82b6ec')
+WAN_FILES = {
+    'README.md': (18130, 'a8371c257da24b53abca003c12ef4421fbd81eb9dfe7d3e49960016080beb51b'),
+    'scheduler/scheduler_config.json': (751, '3fed2abbd9bbc301a74db01947198057ec5049808910dccab320925bf27bea6e'),
+    'text_encoder/config.json': (854, '4087b6192155a4643f6d29fd326c4610103130674011ef4d0a53f8bce5de967d'),
+    'text_encoder/model.safetensors.index.json': (22476, '8af791f24a6447aa30c95786f40adf23d3c9df97470d2f36159c8f1113f120b4'),
+    'tokenizer/special_tokens_map.json': (7079, '456b58fd240a06c743a7c2cf8008bec501240d68ebd1fc4018ea569505fea270'),
+    'tokenizer/spiece.model': (4548313, 'e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458'),
+    'tokenizer/tokenizer.json': (16837459, '20a46ac256746594ed7e1e3ef733b83fbc5a6f0922aa7480eda961743de080ef'),
+    'tokenizer/tokenizer_config.json': (61758, '1d8d2a216bf8e70ac15b7ddcea566c4dd0433c024b39a58ca5e4c66bd78defbd'),
+    'vae/config.json': (724, 'f0c1cc1d7decb5badc384f54691746a27a9aeff49f7ebca974e583389342d527'),
+}
+
 
 def verify_runtime(snapshot):
     snapshot = Path(snapshot)
@@ -61,19 +83,12 @@ def download_assets(root):
     snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION,
                                  allow_patterns=[*RUNTIME_HASHES, 'README.md', 'LICENSE*', 'transformer/*.safetensors'])
     wan = snapshot_download(WAN_ID, revision=WAN_REVISION, allow_patterns=list(WAN_PATTERNS))
-    verify_runtime(snapshot)
     local = Path(root).resolve() / 'model-files'
     local.mkdir(parents=True, exist_ok=True)
     # Keep the persistent Hub/Drive cache intact and load from validated VM-local
     # files. Inference should not mmap multi-GB checkpoints through Drive FUSE.
-    krea_files = [*RUNTIME_HASHES, *[p.name for p in Path(snapshot).iterdir()
-                                  if p.is_file() and (p.name == 'README.md' or p.name.startswith('LICENSE'))]]
-    from fnmatch import fnmatch
-    wan_files = [p.relative_to(wan).as_posix() for p in Path(wan).rglob('*')
-                 if p.is_file() and p.suffix != '.safetensors'
-                 and any(fnmatch(p.relative_to(wan).as_posix(), pattern) for pattern in WAN_PATTERNS)]
     staged = stage_snapshot(snapshot, owned_path(local, 'krea-' + MODEL_REVISION),
-                            MODEL_ID, MODEL_REVISION, KREA_WEIGHTS, krea_files)
+                            MODEL_ID, MODEL_REVISION, KREA_WEIGHTS, KREA_FILES)
     staged_wan = stage_snapshot(wan, owned_path(local, 'wan-' + WAN_REVISION),
-                                WAN_ID, WAN_REVISION, WAN_WEIGHTS, wan_files)
+                                WAN_ID, WAN_REVISION, WAN_WEIGHTS, WAN_FILES)
     return staged, prepare_pipeline(staged, staged_wan, root)
