@@ -6,7 +6,7 @@ from generate_notebook import PROJECT_DIR, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'tensorrt_backend.py',
            'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_quant.py', 'krea_weights.py',
-           'ltx_assets.py', 'ltx_setup.py', 'ltx_backend.py', 'check_ltx_gpu.py')
+           'ltx_assets.py', 'ltx_setup.py', 'ltx_runtime.py', 'ltx_backend.py', 'check_ltx_gpu.py')
 
 
 def make_notebook(project_dir=PROJECT_DIR):
@@ -34,12 +34,20 @@ apply independently of the bridge's MIT and runtime's Apache licenses.
    and provide its absolute path for image-to-video. It is a startup setting.
 4. Open the updated TouchDesigner `.toe` / `.tox`, paste the printed URL and Connect.
    The handshake selects **LTX-2.5** and the locked startup resolution. Set Prompt A
-   and Seed, then pulse **Generate Clip** on the **LTX** page. Each pulse requests one
-   clip; it does not automatically run again. Pause stops playback after current GPU
-   work finishes. Another Generate pulse replaces the remaining queued clip.
+   and Seed, then pulse **Generate or Restart** on the **LTX** page. With **Continuous
+   Generation** On, new clips render automatically with advancing seeds. **Continue
+   Scene from Last Frame** conditions each next clip on the previous ending image.
+   Turn it Off for independent clips. The last frame stays visible while rendering;
+   completed clips are never replayed. Pause stops after current GPU work finishes.
+   Another Generate pulse restarts from Prompt A / Seed and the startup image.
 
 This uses the official distilled **two-stage** pipeline, FP8-cast transformer storage,
-CPU weight offloading and the lighter **convolutional VAE**. FP8-cast saves weight memory;
+the lighter **convolutional VAE** and a one-prompt embedding cache. The default
+**resident** profile keeps the quantized transformer on GPU across stages and clips;
+the text encoder loads on GPU only for a new prompt and is released after encoding.
+A changed prompt releases the transformer before building the text encoder, so the
+two large models are not held together. **low_memory** streams both large models
+from CPU while retaining the one-prompt cache. FP8-cast saves weight memory;
 it does not claim native FP8 compute acceleration on A100. No TensorRT, NATTEN, CUDA
 kernel build, prompt enhancer or quality-detailing LoRA is installed. Upstream also
 generates audio internally; this trial transmits video only. Prompt B/blend, negative
@@ -47,10 +55,12 @@ prompts, denoise strength, live TOP input and World/Krea controls do not steer t
 
 Generation happens before playback. GPU Inference is **whole-clip time**; video playback
 at 24 FPS is not proof of 24 generated FPS. The log reports generated frames/elapsed time.
-First Generate also loads model weights lazily. Progress/pings remain responsive while
+First Generate and a changed prompt also load model weights lazily. The LTX page's
+**Generation Speed** is the actual new frames generated per second. Progress/pings remain responsive while
 the single worker is busy. At most one bounded CPU clip (17–121 frames) plus ACK-limited
 delivery credits is queued. Errors stop automatic retries; inspect logs before retrying.
-This is an experimental clip backend; continuous low-latency generation is unverified.
+Continuous mode creates new clips back to back; it does not guarantee real-time FPS
+or seamless scene boundaries. Lower-memory profile and longer clips need separate measurements.
 
 For opt-in GPU validation, stop Step 3 and run the existing isolated Python:
 `python check_ltx_gpu.py --output captures/ltx-validation --frames 17`.
@@ -116,6 +126,9 @@ Keep the Colab launch cell and TouchDesigner running for playback.
         # @title Step 3: Launch LTX-2.5 clip server
         STARTUP_RESOLUTION = "1024x576" # @param ["1024x576", "512x512", "768x512", "1024x768"]
         CLIP_FRAMES = 33 # @param [17, 33, 65, 121] {type:"raw"}
+        PERFORMANCE_PROFILE = "resident" # @param ["resident", "low_memory"]
+        CONTINUOUS_GENERATION = True # @param {type:"boolean"}
+        CONTINUE_SCENE = True # @param {type:"boolean"}
         INPUT_IMAGE = "" # @param {type:"string"}
         TUNNEL_PROTOCOL = "http2" # @param ["http2", "auto", "quic"]
         if 'ltx_session' in globals():
@@ -126,12 +139,16 @@ Keep the Colab launch cell and TouchDesigner running for playback.
         ltx_session=colab_launcher.BridgeSession(root=runtime_root,backend='ltx',
             server_script='colab_server.py',python_executable=ltx_python,cloudflared=ltx_tunnel,
             output_size=(width,height),startup_timeout=3600,max_fps=24,tunnel_protocol=TUNNEL_PROTOCOL,
-            server_environment={'LTX_CLIP_FRAMES':str(CLIP_FRAMES),'LTX_INPUT_IMAGE':INPUT_IMAGE})
+            server_environment={'LTX_CLIP_FRAMES':str(CLIP_FRAMES),'LTX_INPUT_IMAGE':INPUT_IMAGE,
+                'LTX_PERFORMANCE_PROFILE':PERFORMANCE_PROFILE,
+                'LTX_CONTINUOUS':'1' if CONTINUOUS_GENERATION else '0',
+                'LTX_CONTINUE_SCENE':'1' if CONTINUE_SCENE else '0'})
         try:
             url=ltx_session.start()
             print('Paste this URL into the updated TouchDesigner component:')
             print(url,flush=True)
-            print('Use Prompt A / Seed, then LTX page / Generate Clip. First use loads GPU weights.')
+            print('Use Prompt A / Seed, then LTX page / Generate or Restart. Continuous mode advances seeds automatically.')
+            print('The last frame stays visible while the next clip renders. First use or a changed prompt loads weights.')
             ltx_session.wait()
         except KeyboardInterrupt:
             print('Stopping this LTX session...')

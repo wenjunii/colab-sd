@@ -2,6 +2,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -165,6 +166,11 @@ class AuthenticatedStreamChecks(unittest.TestCase):
                 output = cv2.imdecode(np.frombuffer(b''.join(chunks[i] for i in sorted(chunks)), np.uint8), 1)
                 self.assertEqual(output.shape[:2], (server.output_height, server.output_width))
                 self.assertGreater(int(output[0, 0, 2]), 240)
+            # ASGI context cancellation can return before the serialized worker
+            # finishes releasing the controller. Verify bounded completion.
+            deadline = time.monotonic() + 2
+            while server.active_client is not None and time.monotonic() < deadline:
+                time.sleep(.005)
             self.assertIsNone(server.active_client)
 
 

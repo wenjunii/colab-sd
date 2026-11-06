@@ -37,6 +37,10 @@ def main():
              {'prompt', 'seed', 'height', 'width', 'frame_rate', 'images', 'num_frames', 'enhance_prompt'}),
             ('ltx-pipelines/src/ltx_pipelines/utils/types.py', 'ImageConditioningInput', 'at',
              {'path', 'frame_idx', 'strength'}),
+            ('ltx-pipelines/src/ltx_pipelines/utils/blocks/diffusion_stage.py', 'DiffusionStage', 'from_checkpoint',
+             {'checkpoint_path', 'dtype', 'device', 'quantization', 'registry', 'active_weights', 'offload_mode', 'alloc_trim_strategy'}),
+            ('ltx-pipelines/src/ltx_pipelines/utils/blocks/prompt_encoder.py', 'PromptEncoder', '__init__',
+             {'model_paths', 'dtype', 'device', 'registry', 'offload_mode'}),
         )
         for filename, class_name, method, required in checks:
             tree = ast.parse((packages / filename).read_text(encoding='utf-8'))

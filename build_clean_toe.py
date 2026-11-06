@@ -311,7 +311,15 @@ def onReceiveText(dat, rowIndex, message):
         if 'ltx_clip' in data:
             info = getattr(parent().par, 'Ltxinfo', None)
             if info is not None:
-                info.val = f"Clip {data['ltx_clip']} | {data.get('ltx_queued_frames', 0)} frames queued | {data.get('ltx_generation_ms', 0)/1000:.1f}s generation"
+                info.val = f"Clip {data['ltx_clip']} | {data.get('ltx_queued_frames', 0)} queued | seed {data.get('ltx_seed', '--')} | {data.get('ltx_generation_ms', 0)/1000:.1f}s"
+            speed = getattr(parent().par, 'Ltxspeed', None)
+            if speed is not None:
+                speed.val = f"{data.get('ltx_generated_fps', 0):.2f} new FPS | prompt cache {'hit' if data.get('ltx_prompt_cache_hit') else 'miss'}"
+            if msg_type == 'welcome':
+                for par_name, field in (('Ltxcontinuous', 'ltx_continuous'), ('Ltxchain', 'ltx_continue_scene')):
+                    target = getattr(parent().par, par_name, None)
+                    if target is not None and field in data:
+                        target.val = bool(data[field])
         if 'krea_block' in data:
             info = getattr(parent().par, 'Kreainfo', None)
             if info is not None:
@@ -495,7 +503,9 @@ def send_control(force=False, strength_override=None, world_reset=False, world_r
     if mode == 'ltx':
         msg = {'type': 'control', 'mode': 'ltx', 'width': width, 'height': height,
                'prompt_a': prompt_a, 'seed': seed_val,
-               'ltx_paused': bool(parameter('Ltxpaused', False)), 'ltx_generate': bool(ltx_generate)}
+               'ltx_paused': bool(parameter('Ltxpaused', False)), 'ltx_generate': bool(ltx_generate),
+               'ltx_continuous': bool(parameter('Ltxcontinuous', True)),
+               'ltx_continue_scene': bool(parameter('Ltxchain', True))}
     elif mode == 'krea':
         msg = {'type': 'control', 'mode': 'krea', 'width': width, 'height': height,
                'prompt_a': prompt_a, 'seed': seed_val,
@@ -895,7 +905,8 @@ def onValueChange(par, prev):
             # Coalesce simultaneous CHOP/slider changes into one control packet.
             parent().store('control_pending', True)
         elif par.name in ('Worldbuttons', 'Worldmousex', 'Worldmousey', 'Worldpaused',
-                          'Worldseedsource', 'Worldautoseed', 'Worldseedinterval', 'Kreapaused', 'Ltxpaused'):
+                          'Worldseedsource', 'Worldautoseed', 'Worldseedinterval', 'Kreapaused', 'Ltxpaused',
+                          'Ltxcontinuous', 'Ltxchain'):
             parent().store('control_pending', True)
         elif par.name == 'Displaymode':
             rec = op('script_receiver')
@@ -1112,9 +1123,12 @@ pages 4 StreamDiffusion World Krea LTX
 772804867 Kreapaused "Pause Krea" 1 1 0 0 1 1 1 2 0 "" "" Krea 0
 772804869 Kreareset "Reset Krea Clip" 1 1 0 0 1 1 1 2 0 "" "" Krea 1
 772804868 Kreainfo "Krea Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" Krea 2
-772804869 Ltxgenerate "Generate Clip" 1 1 0 0 1 1 1 2 0 "" "" LTX 0
-772804867 Ltxpaused "Pause LTX Playback" 1 1 0 0 1 1 1 2 0 "" "" LTX 1
-772804868 Ltxinfo "LTX Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" LTX 2
+772804867 Ltxcontinuous "Continuous Generation" 1 1 0 0 1 1 1 2 0 "" "" LTX 0
+772804869 Ltxgenerate "Generate or Restart" 1 1 0 0 1 1 1 2 0 "" "" LTX 1
+772804867 Ltxpaused "Pause LTX" 1 1 0 0 1 1 1 2 0 "" "" LTX 2
+772804867 Ltxchain "Continue Scene from Last Frame" 1 1 0 0 1 1 1 2 0 "" "" LTX 3
+772804868 Ltxspeed "LTX Generation Speed" 1 1 0 0 1 1 1 2 0 "" "" LTX 4
+772804868 Ltxinfo "LTX Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" LTX 5
 ?
 '''
 
@@ -1167,6 +1181,9 @@ Worldseedinfo 67109184 "Prompt model: --"
 Kreapaused 67108928 off
 Kreainfo 67109184 "Waiting for Krea"
 Ltxpaused 67108928 off
+Ltxcontinuous 67108928 on
+Ltxchain 67108928 on
+Ltxspeed 67109184 "0.00 new FPS"
 Ltxinfo 67109184 "Waiting for LTX"
 ?
 '''
@@ -1270,7 +1287,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'latency_callbacks.n').write_text(
         'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused'
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused Ltxcontinuous Ltxchain'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')

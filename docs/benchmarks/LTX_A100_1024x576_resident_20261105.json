@@ -1,0 +1,52 @@
+{
+  "local_test_date": "2026-11-05",
+  "timezone": "America/New_York",
+  "measurement_kind": "Two back-to-back clips in an existing Colab VM with validated local model files",
+  "bridge_runtime_revision": "dae99f9459936607dc6f46059ac3f1c74549c6d9",
+  "runtime_source_revision": "4f521619ae0029e8fbb64d555030c2b121a33b4f",
+  "model_revision": "49b093a39c19169a8a81721dcc541e07e945232f",
+  "gpu": "NVIDIA A100-SXM4-40GB",
+  "torch": "2.11.0+cu130",
+  "size": [1024, 576],
+  "frames_per_clip": 33,
+  "continuous": true,
+  "scene_continuation": true,
+  "construction_seconds": 4.332,
+  "prompt": "A cinematic shot of a red toy car driving along a mountain road at sunrise",
+  "clips": [
+    {
+      "actual_seed": 42,
+      "decoded_frames": 33,
+      "generation_seconds": 152.516,
+      "generated_fps": 0.216,
+      "prompt_cache_hit": false,
+      "prompt_seconds": 53.9103,
+      "first_last_mean_difference": 28.874,
+      "peak_allocated_gib": 24.152,
+      "peak_reserved_gib": 24.188
+    },
+    {
+      "actual_seed": 43,
+      "decoded_frames": 33,
+      "generation_seconds": 10.984,
+      "generated_fps": 3.004,
+      "prompt_cache_hit": true,
+      "prompt_seconds": 0.0,
+      "first_last_mean_difference": 29.479,
+      "peak_allocated_gib": 19.874,
+      "peak_reserved_gib": 19.891
+    }
+  ],
+  "baseline_observation": {
+    "source": "Prior server log in the same Colab VM; different cityscape prompt, not a controlled same-prompt benchmark",
+    "initial_clip_seconds": 361.52,
+    "later_clip_seconds": 235.8618,
+    "later_generated_fps": 0.14
+  },
+  "limits": [
+    "Existing validated VM-local model files and the same Colab environment were reused.",
+    "First render includes prompt encoding and model loading; fresh-VM cold-start time is not established.",
+    "Generation FPS excludes playback/ACK delays. 24 FPS playback does not imply 24 generated FPS.",
+    "Other resolutions, clip lengths, the low_memory profile, long runs and seamless motion need separate validation."
+  ]
+}

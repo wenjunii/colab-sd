@@ -709,6 +709,13 @@ async def startup_event():
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(model_executor, load_pipeline)
 
+
+@app.on_event("shutdown")
+async def close_ltx_runtime():
+    if is_ltx_backend and ltx_backend is not None:
+        await asyncio.get_running_loop().run_in_executor(model_executor, ltx_backend.close)
+
+
 @app.get("/")
 def index():
     return HTMLResponse("""
