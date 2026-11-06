@@ -137,6 +137,7 @@ class ReadinessChecks(unittest.TestCase):
             with self.subTest(missing=missing), patch.dict('sys.modules', {'diffusers': diffusers,
                     'diffusers.modular_pipelines': SimpleNamespace(PipelineState=Mock()),
                     'accelerate': SimpleNamespace(cpu_offload=Mock())}), \
+                    patch('krea_quant.prepare_int8_linears'), \
                     patch.object(backend, 'gpu_preflight'), patch.object(assets, 'download_assets', return_value=('model', 'pipe')):
                 with self.assertRaisesRegex(RuntimeError, missing):
                     backend.KreaBackend.load(self._testMethodName)

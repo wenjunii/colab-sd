@@ -126,6 +126,9 @@ class KreaBackend:
             quantization_config=BitsAndBytesConfig(load_in_8bit=True), device_map='cuda')
         if not getattr(transformer, 'is_loaded_in_8bit', False):
             raise RuntimeError('Requested Krea INT8 transformer did not activate')
+        from krea_quant import prepare_int8_linears
+        count = prepare_int8_linears(transformer)
+        logger.info('Prepared %d INT8 linears for Krea n-dimensional inputs', count)
         pipe.load_components(
             names=['text_encoder', 'vae'],
             trust_remote_code=False, local_files_only=True,
