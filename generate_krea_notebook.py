@@ -6,7 +6,7 @@ from textwrap import dedent
 
 from generate_notebook import PROJECT_DIR, code_cell
 
-SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'tensorrt_backend.py',
+SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'webrtc_transport.py', 'tensorrt_backend.py',
            'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_assets.py', 'krea_weights.py',
            'krea_quant.py', 'krea_backend.py', 'check_krea_gpu.py', 'benchmark_krea.py')
 

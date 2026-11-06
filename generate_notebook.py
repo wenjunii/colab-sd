@@ -79,6 +79,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
     for variable, source_name, target_name in (
         ('server_code', 'colab_server.py', 'server.py'),
         ('protocol_code', 'bridge_protocol.py', 'bridge_protocol.py'),
+        ('webrtc_code', 'webrtc_transport.py', 'webrtc_transport.py'),
         ('launcher_code', 'colab_launcher.py', 'colab_launcher.py'),
         ('tensorrt_code', 'tensorrt_backend.py', 'tensorrt_backend.py'),
         ('sdxl_code', 'sdxl_stream.py', 'sdxl_stream.py'),

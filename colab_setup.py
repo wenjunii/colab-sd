@@ -13,6 +13,7 @@ CORE_DEPENDENCIES = (
     'huggingface-hub==0.25.2', 'accelerate==0.30.1',
     'fastapi', 'uvicorn', 'websockets', 'python-multipart',
     'opencv-python-headless', 'pillow',
+    'aiortc==1.15.0', 'av==17.1.0',
 )
 DEFAULT_DRIVE_MODEL_FOLDER = 'StreamDiffusion/models'
 MODEL_CACHE_VARIABLES = ('HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'TRANSFORMERS_CACHE')

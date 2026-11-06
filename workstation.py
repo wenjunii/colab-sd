@@ -213,7 +213,7 @@ def modern_revisions(backend):
 def modern_signature(backend):
     signature = modern_installer(backend).installation_signature()
     # Runtime identity is independent of the lightweight launcher's Python.
-    # LTX's pinned PyAV 19 requires >=3.12; use Colab's verified Python 3.13.
+    # Retain the Colab/CI Python 3.13 baseline for the supported LTX setup.
     signature['python'] = [3, 13] if backend == 'ltx' else [3, 11]
     return signature
 
@@ -358,6 +358,13 @@ def start(arguments):
         selected = arguments.model_cache or configuration.get('model_cache')
         environment = cache_environment(runtime, selected, legacy=True) if selected else {}
     gpu_check(python, upstream, backend=backend)
+    ice_file = getattr(arguments, 'ice_servers_file', None)
+    if ice_file:
+        from webrtc_transport import validate_ice_servers
+        if ice_file.stat().st_size > 32768:
+            raise ValueError('ICE credentials file is too large')
+        environment['BRIDGE_ICE_SERVERS_JSON'] = json.dumps(validate_ice_servers(
+            json.loads(ice_file.read_text(encoding='utf-8'))))
     token = pairing_token(runtime)
     tunnel = arguments.transport == 'cloudflare'
     binary = cloudflared_binary(runtime) if tunnel else None
@@ -419,6 +426,8 @@ def main(argv=None):
     launch.add_argument('--quantization', choices=('intw8a8', 'bf16'), help='Waypoint only (default: intw8a8)')
     launch.add_argument('--compile-profile', choices=('fast', 'max-autotune'), help='Waypoint only (default: fast)')
     launch.add_argument('--model-cache', type=Path, help='Model cache override for this launch, for any backend')
+    launch.add_argument('--ice-servers-file', type=Path,
+                        help='Private JSON ICE server list (STUN/TURN); credentials stay out of URLs and logs')
     launch.add_argument('--int8-profile', choices=('fast', 'balanced'), help='Krea only (default: fast)')
     launch.add_argument('--clip-blocks', type=int, help='Krea only, 1-64 (default: 64)')
     launch.add_argument('--clip-frames', type=int, choices=LTX_FRAME_COUNTS, help='LTX only (default: 33)')

@@ -1,10 +1,10 @@
 # ⚡ StreamDiffusion Remote TouchDesigner Bridge (`colab-sd`)
 
-Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** with **SD-Turbo** or experimental **SDXL-Turbo** on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. Optional backends add **Waypoint** image-seeded world video, **Krea Realtime** text-to-video and an **LTX-2.5 clip-generation trial**. Connect directly over LAN/VPN or use a **Cloudflare Tunnel** over the internet.
+Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com/cumulo-autumn/StreamDiffusion)** with **SD-Turbo** or experimental **SDXL-Turbo** on **Google Colab** or a **Windows/Linux NVIDIA RTX workstation** into local **TouchDesigner**. Optional backends add **Waypoint** image-seeded world video, **Krea Realtime** text-to-video and an **LTX-2.5 clip-generation trial**. Stream video over **WebRTC**, with **WebSocket JPEG fallback**. Connect over LAN/Tailscale/VPN or use a **Cloudflare Tunnel** for internet signaling and fallback.
 
 ![TouchDesigner](https://img.shields.io/badge/TouchDesigner-2023%2F2025-orange?logo=derivative)
 ![Model](https://img.shields.io/badge/Model-SD--Turbo%20(up%20to%201024x768)-blue)
-![Backend](https://img.shields.io/badge/Backend-FastAPI%20%2B%20WebSockets-green)
+![Backend](https://img.shields.io/badge/Backend-FastAPI%20%2B%20WebRTC%20%2B%20WebSockets-green)
 ![Tunnel](https://img.shields.io/badge/Tunnel-Cloudflare%20(TLS)-yellow)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
@@ -13,6 +13,7 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 ## 🌟 Key Features
 
 * **Two Server Locations:** Choose **Google Colab** or **RTX Workstation (Windows / Linux)**. Each location remembers its own server URL. TouchDesigner uses the local GPU for its TOP network and display; the server runs diffusion.
+* **WebRTC Video Output:** Native TouchDesigner WebRTC DAT / Video Stream In TOP, VP8 video, one pending server frame, and automatic WebSocket JPEG fallback. Shared by StreamDiffusion, Waypoint, Krea and LTX on either server location. No Scope code or separate local receiver application.
 * **Optional Google Drive Model Cache:** Retain Colab model downloads in Drive and reuse them in later runtimes. Enable it in the notebook's setup cell.
 * **Workstation Pairing:** A dedicated Python environment, CUDA preflight, configurable listening address/port, persistent access token, and optional Cloudflare tunnel. Text/image generation, prompts, audio, resolution, snapshots, and telemetry use the same protocol for either location.
 * **Generation Modes:**
@@ -45,6 +46,31 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
 * **Standalone Drag-and-Drop Component (`.tox`):** Single self-contained `StreamDiffusion_Remote.tox` ready to drop into ANY TouchDesigner project.
 
 ---
+
+## WebRTC video, relays and Tailscale
+
+All four Colab notebooks and Windows/Linux workstation backends share the same optional WebRTC output. Use the rebuilt `.toe` or `.tox`, then open its **Streaming** page and select **Video Transport → WebRTC (automatic fallback)**. Keep using the normal **Server WebSocket URL** and, for a workstation, its **Workstation Access Token**. **Active Video Transport** reports negotiation, receiving, or the fallback reason. Select **WebSocket JPEG** to use the previous transport explicitly. Switching video transport does not reload the diffusion model.
+
+The authenticated WebSocket carries controls, telemetry and WebRTC signaling. It also continues carrying input images/world seeds; WebRTC currently replaces **server-to-TouchDesigner video output**. After WebRTC connects, the server passes full-resolution BGR frames directly to a VP8 encoder, bypassing JPEG compression. One pending video frame is retained; newer frames replace stale pending frames instead of accumulating a delivery queue. TouchDesigner receives through its native **WebRTC DAT / Video Stream In TOP**. **AI Output Only** uses the decoded TOP directly; comparison views use the existing display compositor. A failed or timed-out connection returns to bounded JPEG delivery. The last image is held while a model prepares the next frame/chunk.
+
+**Cloudflare Tunnel carries signaling and JPEG fallback, not WebRTC media.** WebRTC uses direct UDP where possible, or a separately configured TURN relay. STUN alone is the default and may fail through Colab/cloud NAT or restrictive home networks. No TURN account is included or created. No Hugging Face token is forwarded to a third-party TURN credential service.
+
+For a relay, choose one of these configurations before starting the server:
+
+* **Existing TURN credentials:** set `BRIDGE_ICE_SERVERS_JSON` to a JSON list such as `[{"urls":["turn:YOUR-RELAY:3478?transport=udp"],"username":"YOUR-USER","credential":"YOUR-PASSWORD"}]`. On Colab, save this as a **Secret** with the same name and enable Notebook access; the launch helper reads it without printing or embedding it in cell source. On a workstation, use that environment variable or `workstation.py start --backend BACKEND --ice-servers-file PATH`. Keep credential files outside Git; `webrtc-ice.local.json` is ignored. Static credentials must remain valid for the session.
+* **Cloudflare Realtime TURN:** create a TURN key in your own Cloudflare account, then provide **`CLOUDFLARE_TURN_KEY_ID`** and **`CLOUDFLARE_TURN_API_TOKEN`** as Colab Secrets or server environment variables. The bridge requests 24-hour credentials from [Cloudflare's documented endpoint](https://developers.cloudflare.com/realtime/turn/generate-credentials/). Only temporary ICE credentials go to the authenticated TD client; the API token stays on the server. Explicit `BRIDGE_ICE_SERVERS_JSON` takes precedence. Reconnect to request fresh credentials; relay service limits/pricing and credential lifetime apply.
+
+**Tailscale is an alternative private network path.** If both computers already have a working Tailscale interface, start a workstation with `--transport lan --bind SERVER-TAILSCALE-IP --advertise-host SERVER-TAILSCALE-IP`, then connect TD to `ws://SERVER-TAILSCALE-IP:8000/ws/stream` and enter the normal pairing token. Tailnet access rules/firewalls must permit the TCP signaling port and UDP WebRTC media between these devices. A reachable tailnet path can remove the need for TURN or a public Cloudflare tunnel. This project does not install Tailscale, sign devices into a tailnet, change routes, or alter existing VPN settings.
+
+For **Colab**, first establish a real Tailscale **TUN interface** in the runtime, then launch `BridgeSession` with `tunnel=False`, `host=SERVER-TAILSCALE-IP` and `advertise_host=SERVER-TAILSCALE-IP`. Availability of `/dev/net/tun` and network-administration permissions varies by runtime; this Colab route is not yet validated. Tailscale's [userspace SOCKS/HTTP mode](https://tailscale.com/docs/concepts/userspace-networking) alone does not transparently route aiortc's UDP media. Do not assume that a TCP proxy or `tailscale serve` also makes the WebRTC video path reachable. Keep the normal notebook Cloudflare launch unless the TUN path has been established.
+
+Check `tailscale ping SERVER-TAILSCALE-IP` and `tailscale status`. A [**direct** connection](https://tailscale.com/docs/reference/connection-types) generally has better latency/throughput; **DERP relay** can still limit video performance. Tailscale does not guarantee a direct connection or a specific FPS.
+
+**Upgrade:** rerun the matching notebook setup cell or `workstation.py setup --backend BACKEND` to add **aiortc 1.15.0 / PyAV 17.1.0**, then restart that bridge when ready. LTX retains Python 3.13 and its pinned CUDA/model stack; its PyAV pin is aligned with aiortc's supported `<18` range. Do not install these packages into TD or replace a running test session just to update the repository. New notebooks embed the transport helper automatically. Older servers/clients continue to use JPEG.
+
+**Limits and licenses:** WebRTC changes delivery, not neural generation speed; LTX's initial/changed-prompt render waits remain. VP8 encoding runs on CPU (the A100 has no NVENC), so actual FPS depends on generation, CPU encoding and the network. JPEG **Video Quality / Video Buffer** controls apply to JPEG fallback; WebRTC uses congestion control and a single pending frame. JPEG delivery RTT/size readouts show unavailable/RTP while WebRTC is active rather than mislabeling stale JPEG measurements; decoded frames drive Effective FPS. The new transport uses [aiortc 1.15.0 (BSD-3-Clause)](https://github.com/aiortc/aiortc/blob/1.15.0/LICENSE) and [PyAV 17.1.0 (BSD-3-Clause)](https://github.com/PyAV-Org/PyAV/tree/v17.1.0), plus their codec/dependency licenses. No Scope application code is used. Model-weight terms remain separate and unchanged.
+
+Validation includes a real CPU VP8 exchange at **1024 × 768**, color/orientation checks, prompt/control delivery, bounded replacement, credential redaction and fallback without model reload. A separate **TouchDesigner 2025.32820** native check decoded **411 frames**, displayed **11.7 FPS** from a synthetic 12 FPS source, and reported no recursive operator errors. [Recorded result](docs/benchmarks/WebRTC_TD_1024x768_CPU_20261106.json). This validates local transport, not diffusion inference, Colab internet/TURN performance or any promised FPS on the A100.
 
 ## SDXL-Turbo in StreamDiffusion (experimental)
 
@@ -222,8 +248,10 @@ flowchart LR
         CHOP["Audio CHOP\n(Kick / Level)"] --> EXEC["exec_send_frame\n(Flow Control & Audio Rx)"]
         FIT --> EXEC
         EXEC -.->|"ws.sendBinary(FRM: <=4KB)"| WS_DAT["WebSocket DAT"]
-        WS_DAT -->|"onReceiveBinary"| SCRIPT["Script TOP\n(Side-by-Side / Wipe / AI)"]
+        WS_DAT -->|"JPEG fallback"| SCRIPT["Script TOP\n(Side-by-Side / Wipe / AI)"]
         SCRIPT --> OUT["null1 (Output TOP)"]
+        RTC_IN["WebRTC DAT / Video Stream In TOP"] -->|"Native AI output"| OUT
+        RTC_IN -->|"Comparison views"| SCRIPT
     end
 
     subgraph NET["☁️ Cloudflare Tunnel"]
@@ -232,10 +260,12 @@ flowchart LR
 
     subgraph COLAB["⚡ Colab or Windows/Linux RTX workstation"]
         CF <===>|"HTTP / WebSocket :8000"| FASTAPI["FastAPI / Uvicorn Server"]
-        WS_DAT <===>|"Direct LAN / VPN ws://workstation:8000"| FASTAPI
+        WS_DAT <===>|"LAN / Tailscale / VPN ws://server:8000"| FASTAPI
         FASTAPI --> REASS["Frame Reassembly"]
         REASS --> PIPE["StreamDiffusion (SD-Turbo)\nPrompt Embedding Blending\nDynamic t_index_list"]
         PIPE --> COMP["Dynamic JPEG Compression"]
+        PIPE --> RTC_ENC["Latest frame → VP8 encoder"]
+        RTC_ENC -->|"WebRTC media: direct UDP / TURN"| RTC_IN
         COMP -.->|"send_chunked_frame\n(2KB Chunks)"| FASTAPI
     end
 ```
@@ -416,7 +446,7 @@ py -3.13 workstation.py setup --backend ltx
 py -3.13 workstation.py start --backend ltx --resolution 768x512 --advertise-host 192.168.1.50
 ```
 
-Use `python3.13` on Linux. LTX requires Python **3.13**, matching Colab; its pinned PyAV 19 does not support Python 3.11. The separate runtime pins **Torch 2.11.0 / cu130**, Transformers 5.14.1 and the same hash-verified LTX source and split weights as Colab. Existing Hugging Face login credentials or an `HF_TOKEN` in the workstation shell supply model access; the account must have accepted the model terms. For a one-time login after setup, run `.\.workstation-ltx\venv\Scripts\hf.exe auth login` on Windows or `.workstation-ltx/venv/bin/hf auth login` on Linux. Keep credentials out of source and Git. Cache options do not relocate the login/token path. Application and model-weight licenses remain separate, as documented in the LTX section.
+Use `python3.13` on Linux. This project retains Python **3.13** as its supported LTX setup baseline, matching Colab and CI. PyAV **17.1.0** is shared with the WebRTC transport. The separate runtime pins **Torch 2.11.0 / cu130**, Transformers 5.14.1 and the same hash-verified LTX source and split weights as Colab. Existing Hugging Face login credentials or an `HF_TOKEN` in the workstation shell supply model access; the account must have accepted the model terms. For a one-time login after setup, run `.\.workstation-ltx\venv\Scripts\hf.exe auth login` on Windows or `.workstation-ltx/venv/bin/hf auth login` on Linux. Keep credentials out of source and Git. Cache options do not relocate the login/token path. Application and model-weight licenses remain separate, as documented in the LTX section.
 
 Defaults match Colab: **1024 × 576 / 33 frames / resident / continuous On / Continue Scene On / Scene Refresh 4**. Select `--resolution 512x512`, `768x512`, `1024x576` or `1024x768`; `--clip-frames 17`, `33`, `65` or `121`; `--performance-profile resident` or `low_memory`; and optional `--input-image PATH`. `--no-continuous`, `--no-continue-scene` and `--refresh-every 0` disable the corresponding defaults for that launch. The supported refresh range is 0–32 clips. LTX has no StreamDiffusion TensorRT option.
 
@@ -472,7 +502,7 @@ For a first connection, keep 512 × 512 or choose a smaller output. After frames
 
 ## 🎛️ TouchDesigner Component Parameters
 
-The `StreamDiffusion_Remote` COMP exposes connection/generation controls on **StreamDiffusion** and Waypoint controls on **World**:
+The `StreamDiffusion_Remote` COMP exposes connection/generation controls on **StreamDiffusion**, transport selection on **Streaming**, and backend controls on **World**, **Krea** and **LTX**:
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -480,6 +510,8 @@ The `StreamDiffusion_Remote` COMP exposes connection/generation controls on **St
 | **Server WebSocket URL** | String | Empty | Server LAN/VPN `ws://` or Cloudflare `wss://` endpoint, including `/ws/stream`. |
 | **Workstation Access Token** | String | Empty | Pairing token printed by the workstation launcher; blank for Colab. |
 | **Connect to Server** | Toggle | `Off` | Connects or disconnects the WebSocket stream. |
+| **Video Transport** (Streaming) | Menu | `WebRTC (automatic fallback)` | Native VP8 output, or explicit WebSocket JPEG. Model controls and image uploads remain on the socket. |
+| **Active Video Transport** (Streaming) | String (Display) | `Disconnected` | WebRTC negotiation/receiving or JPEG fallback reason. |
 | **Generation Mode** | Menu | `Text-to-Video` | `txt2img` / `img2img` (StreamDiffusion), `world` (Waypoint), `krea` (Krea Realtime), or `ltx` (LTX-2.5 clips). The handshake selects the connected backend. |
 | **Output Resolution / Ratio** | Menu | `512 × 512` | 16 StreamDiffusion presets, plus native Waypoint/Krea/LTX sizes. Adopts the server startup size; LTX defaults to locked 1024 × 576 (16:9). |
 | **Input Source** | Menu | `External Input` | `External Input (in1)` (wired cable), `Webcam (cam_in)`, or `Internal Noise`. |

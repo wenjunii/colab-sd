@@ -75,6 +75,7 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import cv2
 import numpy as np
 from PIL import Image
@@ -83,6 +84,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
 from tensorrt_backend import compile_unet as compile_tensorrt_unet
+from webrtc_transport import WebRTCOutput, available as webrtc_available
 from bridge_protocol import (OUTPUT_RESOLUTIONS, PROTOCOL_VERSION, OUTPUT_CHUNK_BYTES,
                              MAX_INPUT_FRAME_BYTES, VIDEO_QUALITY_LIMITS, FrameAssembler,
                              resolution, validate_controls, video_byte_budget)
@@ -366,7 +368,7 @@ def run_model_inference(input_image=None, mode=None):
         return None
 
 
-def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
+def process_frame(mode, frame_bytes=None, max_frame_bytes=None, raw_output=False):
     """Decode, infer, and encode on the worker; return complete frame timings."""
     started = time.perf_counter()
     if is_world_backend or is_krea_backend or is_ltx_backend:
@@ -376,7 +378,7 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
         if result is None:
             return None
         out_bgr, batch_ms = result
-        jpg = compress_frame(out_bgr, max_frame_bytes, allow_oversize=True)
+        jpg = out_bgr if raw_output else compress_frame(out_bgr, max_frame_bytes, allow_oversize=True)
         # The GPU readout is the generated chunk duration, not single-frame latency.
         return jpg, batch_ms, (time.perf_counter() - started) * 1000
     input_image = None
@@ -401,8 +403,8 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
         out_bgr = cv2.cvtColor((np.clip(arr, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
     else:
         out_bgr = np.asarray(output)
-    jpg_bytes = compress_frame(out_bgr, max_bytes=max_frame_bytes,
-                               allow_oversize=max_frame_bytes is not None)
+    jpg_bytes = out_bgr if raw_output else compress_frame(out_bgr, max_bytes=max_frame_bytes,
+                                                        allow_oversize=max_frame_bytes is not None)
     return jpg_bytes, inf_ms, (time.perf_counter() - started) * 1000
 
 
@@ -845,16 +847,28 @@ async def websocket_stream_endpoint(websocket: WebSocket):
     frame_counter = 0
     latest_stats = {}
     world_seed_until = 0.0
+    rtc = None
+
+    def rtc_active():
+        return rtc is not None and rtc.connected
 
     async def send_json(data):
+        if data.get('type') in ('rtc_state', 'rtc_closed'):
+            outstanding_frames.clear()
+            frame_credit.set()
+            for key in ('delivery_ms', 'display_ms', 'client_frame_ms'):
+                latest_stats.pop(key, None)
         async with send_lock:
             await websocket.send_text(json.dumps(data))
 
     async def wait_for_frame_credit():
         started = time.perf_counter()
-        while ack_enabled and len(outstanding_frames) >= frame_window:
+        while not rtc_active() and ack_enabled and len(outstanding_frames) >= frame_window:
             frame_credit.clear()
-            await frame_credit.wait()
+            try:
+                await asyncio.wait_for(frame_credit.wait(), timeout=.1)
+            except asyncio.TimeoutError:
+                pass
         return (time.perf_counter() - started) * 1000
 
     async def send_chunked_frame(jpg_bytes):
@@ -888,6 +902,9 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     "type": "stats", "engine": engine_for_mode(), "model": model_label(),
                     "vram": vram, "temp": temp, **latest_stats,
                     'ready': pipeline_ready, 'inflight_frames': len(outstanding_frames),
+                    'video_transport': 'webrtc' if rtc_active() else 'websocket',
+                    'rtc_submitted': rtc.track.submitted if rtc_active() else 0,
+                    'rtc_dropped': rtc.track.dropped if rtc_active() else 0,
                     **progress,
                 })
                 if time.perf_counter() >= next_log:
@@ -927,6 +944,8 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     apply_controls(data)
                 else:
                     await loop.run_in_executor(model_executor, apply_controls, data)
+                if rtc is not None:
+                    rtc.clear()
                 await send_json({"type": "configured", "status": "Connected (Streaming)",
                                  "width": output_width, "height": output_height, "engine": engine_for_mode(),
                                  "ready": pipeline_ready, "mode": current_mode,
@@ -981,22 +1000,36 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 revision = pipeline_revision
                 frame_quality = video_quality
                 budget = video_byte_budget(output_width, output_height, frame_quality)
+                raw_output = rtc_active()
                 # LTX pop/JPEG work is CPU-only and can overlap the single GPU
                 # worker rendering one lookahead clip. Other backends stay serial.
                 executor = None if mode == 'ltx' else model_executor
-                result = await loop.run_in_executor(executor, process_frame, mode, frame_bytes, budget)
+                if raw_output:
+                    result = await loop.run_in_executor(executor, partial(process_frame, mode, frame_bytes,
+                                                                          raw_output=True))
+                else:
+                    result = await loop.run_in_executor(executor, process_frame, mode, frame_bytes, budget)
                 # Discard a completed frame if its mode was switched during inference.
-                if result is not None and current_mode == mode and revision == pipeline_revision:
+                if (result is not None and current_mode == mode and revision == pipeline_revision
+                        and raw_output == rtc_active()):
                     jpg_bytes, inf_ms, process_ms = result
-                    send_ms, extra_credit_ms = await send_chunked_frame(jpg_bytes)
+                    if raw_output:
+                        rtc.track.put(jpg_bytes)
+                        outstanding_frames.clear()
+                        frame_credit.set()
+                        send_ms, extra_credit_ms = 0.0, 0.0
+                    else:
+                        send_ms, extra_credit_ms = await send_chunked_frame(jpg_bytes)
                     frame_count += 1
                     latest_stats.update(inf_ms=round(inf_ms, 1), process_ms=round(process_ms, 1),
-                                        mode=mode, strength=current_strength, frame_bytes=len(jpg_bytes),
+                                        mode=mode, strength=current_strength,
+                                        frame_bytes=0 if raw_output else len(jpg_bytes),
                                         video_quality=frame_quality, send_ms=round(send_ms, 1),
                                         credit_wait_ms=round(credit_ms + extra_credit_ms, 1))
                     if frame_count % 100 == 1:
-                        logger.info("%s: frame #%d (inference %.1fms, processing %.1fms, %d bytes)",
-                                    mode, frame_count, inf_ms, process_ms, len(jpg_bytes))
+                        logger.info("%s: frame #%d (inference %.1fms, processing %.1fms, transport=%s)",
+                                    mode, frame_count, inf_ms, process_ms,
+                                    'WebRTC VP8' if raw_output else f'JPEG {len(jpg_bytes)} bytes')
                 if mode in ('txt2img', 'world', 'krea', 'ltx'):
                     fps = min(max_stream_fps, ltx_backend.playback_fps) if mode == 'ltx' else max_stream_fps
                     await asyncio.sleep(max(0.0, 1.0 / fps - (time.perf_counter() - started)))
@@ -1050,6 +1083,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             "vram": vram, "temp": temp,
             'resolution_locked': resolution_locked(), 'latency_probe': True, 'frame_ack': True,
             'video_quality_profiles': list(VIDEO_QUALITY_LIMITS),
+            'video_transports': ['websocket', 'webrtc'] if webrtc_available() else ['websocket'],
             'backend': backend_name,
             'supported_modes': ['ltx'] if is_ltx_backend else ['krea'] if is_krea_backend else ['world'] if is_world_backend else ['txt2img', 'img2img'],
             'world_seed_required': is_world_backend and world_backend.seed_image is None,
@@ -1068,6 +1102,8 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 break
             if message.get("text") is not None:
                 try:
+                    if len(message['text']) > 65536:
+                        raise ValueError('Control message too large')
                     data = json.loads(message["text"])
                     if not isinstance(data, dict):
                         continue
@@ -1086,8 +1122,34 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                 or isinstance(value, bool) or not 1 <= value <= 6):
                             raise ValueError('Invalid frame window')
                         video_quality = quality
+                        transport = data.get('video_transport')
+                        if transport is not None and transport not in ('websocket', 'webrtc'):
+                            raise ValueError('Invalid video transport')
+                        if transport == 'webrtc' and (rtc is None or rtc.closed):
+                            if webrtc_available():
+                                rtc = WebRTCOutput(send_json)
+                                rtc.start()
+                            else:
+                                await send_json({'type': 'rtc_closed', 'status':
+                                    'WebRTC dependencies missing; rerun server setup. Using WebSocket video'})
+                        elif transport == 'websocket' and rtc is not None:
+                            await rtc.close()
+                            rtc = None
+                            outstanding_frames.clear()
+                            frame_credit.set()
                         if data.get('frame_ack') is True:
                             ack_enabled, frame_window = True, value
+                            frame_credit.set()
+                    elif data.get('type') in ('rtc_answer', 'rtc_candidate'):
+                        if rtc is not None:
+                            try:
+                                await rtc.receive(data)
+                            except Exception:
+                                await rtc.fail('WebRTC negotiation failed; using WebSocket video')
+                    elif data.get('type') == 'rtc_stop':
+                        if rtc is not None and data.get('session') == rtc.session:
+                            await rtc.fail('WebRTC receiver unavailable; using WebSocket video')
+                            outstanding_frames.clear()
                             frame_credit.set()
                     elif data.get('type') == 'frame_ack':
                         frame_id = data.get('frame_id')
@@ -1159,6 +1221,8 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         # The worker serializes it behind already-running model operations.
         cleanup = model_executor.submit(release_controller)
         try:
+            if rtc is not None:
+                await rtc.close()
             await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             await asyncio.shield(asyncio.wrap_future(cleanup))

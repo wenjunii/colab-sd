@@ -1,5 +1,7 @@
 ?
-pages 4 StreamDiffusion World Krea LTX
+pages 5 StreamDiffusion Streaming World Krea LTX
+772804879 Videotransport "Video Transport" 1 1 0 0 1 1 1 2 0 "" "" Streaming 4097 2 webrtc "WebRTC (automatic fallback)" websocket "WebSocket JPEG" 0
+772804868 Transportstate "Active Video Transport" 1 1 0 0 1 1 1 2 0 "" "" Streaming 1
 772804879 Serverlocation "Server Location" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 colab "Google Colab" workstation "RTX Workstation (Windows / Linux)" 0
 772804868 Serverurl "Server WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
 772804868 Accesstoken "Workstation Access Token" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 2

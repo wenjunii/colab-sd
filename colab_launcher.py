@@ -151,6 +151,8 @@ class BridgeSession:
 
     def start(self):
         self.stop()
+        from webrtc_transport import load_colab_secrets
+        load_colab_secrets()
         self.tunnel_url = None
         self.tunnel_tail = ''
         self._expected_prompt_seed_model = None

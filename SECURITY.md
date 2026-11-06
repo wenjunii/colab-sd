@@ -15,6 +15,14 @@ To audit the installed development environment:
 .\.venv\Scripts\python.exe audit_dependencies.py
 ```
 
+## WebRTC transport
+
+All server backends add aiortc 1.15.0 and PyAV 17.1.0; LTX's PyAV pin is aligned with aiortc's supported range. CPU CI exercises actual VP8 encoding/decoding, negotiation and fallback. GPU model performance and remote NAT/TURN connectivity are separate validations. TouchDesigner uses native WebRTC operators and receives no installed Python packages.
+
+WebRTC signaling, SDP and candidates use the existing authenticated single-controller WebSocket. There is no additional anonymous signaling endpoint. Client messages cannot supply ICE server URLs or provider API keys; only server environment/Colab Secrets or a workstation's private `--ice-servers-file` configure ICE. Answers/candidates are scoped to a random connection-session ID and bounded in size/count. Failed setup reports a generic reason without provider responses, URLs or credentials. The relay credential API runs off the event loop with a bounded timeout. Media uses WebRTC's DTLS/SRTP; the control socket must use a trusted LAN/private tailnet or TLS (`wss`) on public networks.
+
+Cloudflare TURN API keys stay in the server process. Temporary ICE credentials are sent only after bridge authentication, but can remain in TD's runtime WebRTC parameters; avoid publishing a saved runtime project with credentials. Static credentials are secrets too. Repository-built `.toe`/`.tox` files contain no TURN credentials. No HF token is forwarded to a TURN service. Operator-configured relay lifetimes, account limits and access policies apply. Private Tailscale routes are an alternative only when the runtime has usable network interfaces; a userspace TCP proxy alone does not route the UDP media.
+
 ## GPU runtimes: known legacy dependencies
 
 `colab_setup.py` embeds a separate runtime setup in the generated notebook. It still installs Diffusers 0.24.0, Transformers 4.39.3, Hugging Face Hub 0.25.2, and Accelerate 0.30.1 for compatibility with the pinned upstream StreamDiffusion wrapper. The runtime also retains Colab's installed CUDA build of PyTorch, which may be older than the CPU test version. These versions are not security-current. A clean Dependabot view for the test manifest must not be interpreted as a security audit of the Colab runtime.

@@ -4,7 +4,7 @@ from pathlib import Path
 from textwrap import dedent
 from generate_notebook import PROJECT_DIR, code_cell
 
-SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'tensorrt_backend.py',
+SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'webrtc_transport.py', 'tensorrt_backend.py',
            'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_quant.py', 'krea_weights.py',
            'ltx_assets.py', 'ltx_setup.py', 'ltx_runtime.py', 'ltx_backend.py', 'check_ltx_gpu.py', 'check_ltx_stream.py')
 
