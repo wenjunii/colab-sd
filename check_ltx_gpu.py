@@ -10,7 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--frames', type=int, choices=(17, 33, 65, 121), default=17)
-    parser.add_argument('--size', choices=('512x512', '768x512', '1024x768'), default='512x512')
+    parser.add_argument('--size', choices=('512x512', '768x512', '1024x576', '1024x768'), default='512x512')
     parser.add_argument('--image', default='')
     args = parser.parse_args()
     from krea_setup import require_unused_port

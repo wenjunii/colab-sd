@@ -11,14 +11,16 @@ import numpy as np
 from bridge_protocol import integer
 
 logger = logging.getLogger(__name__)
-SIZES = ((512, 512), (768, 512), (1024, 768))
+SIZES = ((512, 512), (768, 512), (1024, 576), (1024, 768))
+DEFAULT_SIZE = (1024, 576)
 FRAME_COUNTS = (17, 33, 65, 121)
 
 
 def startup_size():
-    size = tuple(integer(os.environ.get('BRIDGE_INITIAL_' + key, '512'), key) for key in ('WIDTH', 'HEIGHT'))
+    size = tuple(integer(os.environ.get('BRIDGE_INITIAL_' + key, str(default)), key)
+                 for key, default in zip(('WIDTH', 'HEIGHT'), DEFAULT_SIZE))
     if size not in SIZES:
-        raise ValueError('LTX output must be 512x512, 768x512 or 1024x768')
+        raise ValueError('LTX output must be 512x512, 768x512, 1024x576 or 1024x768')
     return size
 
 

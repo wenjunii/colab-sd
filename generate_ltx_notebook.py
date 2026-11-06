@@ -26,8 +26,10 @@ apply independently of the bridge's MIT and runtime's Apache licenses.
    **71.1 GB (66.2 GiB)**. Allow at least 72 GB in Drive and 72 GB on the VM for
    validated local staging, plus environment space. Without Drive, allow both copies
    on VM disk. Valid files are reused; other backend caches are preserved.
-3. Step 3 chooses actual generation resolution and clip length. Start with
-   **512 × 512 / 33 frames**. Larger choices need a GPU measurement.
+3. Step 3 chooses actual generation resolution and clip length. The default is
+   **1024 × 576 (16:9) / 33 frames**. Other choices are 512 × 512, 768 × 512 and
+   1024 × 768. Use 512 × 512 for a smaller initial GPU test; performance is unverified.
+   Both dimensions must be multiples of 64 for this two-stage pipeline.
    Leave `INPUT_IMAGE` empty for text-to-video, or upload an image through Colab Files
    and provide its absolute path for image-to-video. It is a startup setting.
 4. Open the updated TouchDesigner `.toe` / `.tox`, paste the printed URL and Connect.
@@ -112,7 +114,7 @@ Keep the Colab launch cell and TouchDesigner running for playback.
     ''')
     launch = dedent('''\
         # @title Step 3: Launch LTX-2.5 clip server
-        STARTUP_RESOLUTION = "512x512" # @param ["512x512", "768x512", "1024x768"]
+        STARTUP_RESOLUTION = "1024x576" # @param ["1024x576", "512x512", "768x512", "1024x768"]
         CLIP_FRAMES = 33 # @param [17, 33, 65, 121] {type:"raw"}
         INPUT_IMAGE = "" # @param {type:"string"}
         TUNNEL_PROTOCOL = "http2" # @param ["http2", "auto", "quic"]
