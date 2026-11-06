@@ -229,6 +229,10 @@ def onReceiveText(dat, rowIndex, message):
                 par = getattr(parent().par, name, None)
                 if par is not None:
                     par.val = value
+        elif data.get('image_codec') in ('jpeg', 'webp'):
+            readout = getattr(parent().par, 'Transportstate', None)
+            if readout is not None:
+                readout.val = 'WebSocket ' + data['image_codec'].upper()
         if msg_type == 'welcome' and data.get('protocol') != 1:
             last_error = 'Bridge versions differ: update the server and TouchDesigner component'
             parent().store('server_ready', False)
@@ -301,6 +305,8 @@ def onReceiveText(dat, rowIndex, message):
             parent().store('handshake_complete', True)
             parent().store('frame_ack_supported', bool(data.get('frame_ack', False)))
             parent().store('video_transports', data.get('video_transports', ['websocket']))
+            parent().store('video_quality_profiles', data.get('video_quality_profiles', ['fast', 'balanced', 'detail']))
+            parent().store('image_codecs', data.get('image_codecs', ['jpeg']))
             parent().store('resolution_locked', bool(data.get('resolution_locked', False)))
             if 'width' in data and 'height' in data:
                 width, height = int(data['width']), int(data['height'])
@@ -487,6 +493,23 @@ def send_client_options():
     if ws:
         options = {'type': 'client_options', 'frame_ack': True,
                    'frame_window': window, 'video_quality': quality}
+        if quality == 'compact':
+            # Prove this TD OpenCV build can decode WebP before requesting it.
+            supported = parent().fetch('webp_decode_supported', None)
+            if supported is None:
+                import cv2
+                import numpy as np
+                probe = bytes.fromhex('524946461e000000574542505650384c110000002f000000000750a82ad4b2ff8188e87f0000')
+                try:
+                    supported = cv2.imdecode(np.frombuffer(probe, np.uint8), cv2.IMREAD_COLOR) is not None
+                except Exception:
+                    supported = False
+                parent().store('webp_decode_supported', supported)
+            if (supported and 'webp' in parent().fetch('image_codecs', [])
+                    and 'compact' in parent().fetch('video_quality_profiles', [])):
+                options['image_codecs'] = ['jpeg', 'webp']
+            else:
+                options['video_quality'] = 'fast'
         transport_par = getattr(parent().par, 'Videotransport', None)
         if transport_par is not None:
             transport = str(transport_par.eval())
@@ -1124,7 +1147,7 @@ def save_snapshot():
 
 CPARM_CONTENT = f'''?
 pages 5 StreamDiffusion Streaming World Krea LTX
-772804879 Videotransport "Video Transport" 1 1 0 0 1 1 1 2 0 "" "" Streaming 4097 2 webrtc "WebRTC (automatic fallback)" websocket "WebSocket JPEG" 0
+772804879 Videotransport "Video Transport" 1 1 0 0 1 1 1 2 0 "" "" Streaming 4097 2 webrtc "WebRTC (automatic fallback)" websocket "WebSocket images (JPEG / WebP)" 0
 772804868 Transportstate "Active Video Transport" 1 1 0 0 1 1 1 2 0 "" "" Streaming 1
 772804879 Serverlocation "Server Location" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 2 colab "Google Colab" workstation "RTX Workstation (Windows / Linux)" 0
 772804868 Serverurl "Server WebSocket URL" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 1
@@ -1159,7 +1182,7 @@ pages 5 StreamDiffusion Streaming World Krea LTX
 772804868 Frametime "Frame Round Trip" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 30
 772804868 Streamrtt "Stream Control RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 31
 772804879 Framewindow "Video Buffer (frames)" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 1 "1 (lowest latency)" 2 "2" 3 "3 (balanced)" 6 "6 (higher throughput)" 32
-772804879 Videoquality "Video Quality" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 3 fast "Fast (48 KB target)" balanced "Balanced (64 KB target)" detail "Detail (larger frames)" 33
+772804879 Videoquality "Video Quality" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 4097 4 compact "Compact WebP (12 KB target)" fast "Fast (48 KB target)" balanced "Balanced (64 KB target)" detail "Detail (larger frames)" 33
 772804868 Framesize "Video Frame Size" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 34
 772804868 Deliverytime "Video Delivery RTT" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 35
 772804868 Cooktime "Display Cook" 1 1 0 0 1 1 1 2 0 "" "" StreamDiffusion 36

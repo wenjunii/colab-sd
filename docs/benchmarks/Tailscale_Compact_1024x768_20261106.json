@@ -1,0 +1,49 @@
+{
+  "date": "2026-11-06",
+  "scope": "Synthetic CPU image transport from Colab to Windows over direct Tailscale; no model inference or live TouchDesigner benchmark",
+  "resolution": [1024, 768],
+  "source_fps": 8,
+  "tailscale_colab_version": "1.104.5",
+  "tailscale_colab_mode": "userspace-networking with private TCP Serve",
+  "fixture": "Seeded RGB gradients, mild noise, rectangle, ellipse and text; identical source pixels for both codecs",
+  "websocket_image_chunk_bytes": 2048,
+  "local_decoder_check": {
+    "runtime": "Installed TouchDesigner bundled Python / OpenCV 4.11.0",
+    "source": "Actual application compress_webp_frame encoder; separate synthetic two-color frame",
+    "resolution": [1024, 768],
+    "encoded_bytes": 2690,
+    "expected_bgr": [10, 80, 150],
+    "decoded_bgr": [10, 80, 151],
+    "local_encoder_ms": [81.3, 12.3, 12.2, 12.2, 12.8],
+    "scope": "Codec compatibility only; no live TD TOP/display FPS measurement"
+  },
+  "runs": [
+    {
+      "codec": "WebP",
+      "encoding": "Pillow WebP method 0; highest integer quality under 12000 bytes",
+      "frame_bytes": 11952,
+      "decoded_frames": 80,
+      "delivery_fps": 8.0,
+      "websocket_ping_ms": 234.0,
+      "median_frame_interval_ms": 125.0,
+      "p95_frame_interval_ms": 172.0
+    },
+    {
+      "codec": "JPEG",
+      "encoding": "Pillow optimized JPEG; highest integer quality under 48000 bytes",
+      "frame_bytes": 47272,
+      "decoded_frames": 80,
+      "delivery_fps": 2.32,
+      "websocket_ping_ms": 235.0,
+      "median_frame_interval_ms": 437.0,
+      "p95_frame_interval_ms": 609.0
+    }
+  ],
+  "limits": [
+    "CPU fixtures were pre-encoded; the measurements do not include model inference or per-frame encoding cost.",
+    "The application uses a bounded quality ladder and warm-frame quality hints, not the benchmark's quality binary search.",
+    "TCP/WebSocket route and payload tests do not prove live TouchDesigner display performance.",
+    "The two codec runs were sequential; internet conditions can vary.",
+    "Compression is lossy; fine-detail and image-dependent byte sizes require visual assessment."
+  ]
+}

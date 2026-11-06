@@ -74,11 +74,12 @@ import asyncio
 import json
 import logging
 import threading
+import io
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, features as pillow_features
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -147,6 +148,7 @@ def stateful_backend():
 pipeline_revision = 0
 last_pipeline_error = None
 jpeg_quality_hints = {}
+webp_quality_hints = {}
 
 # Engine acceleration state
 enable_tensorrt = os.environ.get("ENABLE_TENSORRT", "0") in ("1", "true", "True") or "--tensorrt" in sys.argv
@@ -368,9 +370,10 @@ def run_model_inference(input_image=None, mode=None):
         return None
 
 
-def process_frame(mode, frame_bytes=None, max_frame_bytes=None, raw_output=False):
+def process_frame(mode, frame_bytes=None, max_frame_bytes=None, raw_output=False, image_codec='jpeg'):
     """Decode, infer, and encode on the worker; return complete frame timings."""
     started = time.perf_counter()
+    encode_frame = compress_webp_frame if image_codec == 'webp' else compress_frame
     if is_world_backend or is_krea_backend or is_ltx_backend:
         if is_world_backend and frame_bytes is not None:
             world_backend.set_seed_image(frame_bytes)
@@ -378,7 +381,7 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None, raw_output=False
         if result is None:
             return None
         out_bgr, batch_ms = result
-        jpg = out_bgr if raw_output else compress_frame(out_bgr, max_frame_bytes, allow_oversize=True)
+        jpg = out_bgr if raw_output else encode_frame(out_bgr, max_frame_bytes, allow_oversize=True)
         # The GPU readout is the generated chunk duration, not single-frame latency.
         return jpg, batch_ms, (time.perf_counter() - started) * 1000
     input_image = None
@@ -403,7 +406,7 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None, raw_output=False
         out_bgr = cv2.cvtColor((np.clip(arr, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
     else:
         out_bgr = np.asarray(output)
-    jpg_bytes = out_bgr if raw_output else compress_frame(out_bgr, max_bytes=max_frame_bytes,
+    jpg_bytes = out_bgr if raw_output else encode_frame(out_bgr, max_bytes=max_frame_bytes,
                                                         allow_oversize=max_frame_bytes is not None)
     return jpg_bytes, inf_ms, (time.perf_counter() - started) * 1000
 
@@ -496,6 +499,32 @@ def _apply_validated_controls(data, width, height, resizing):
         data.get("prompt_a", data.get("prompt")), data.get("prompt_b"),
         data.get("blend"), data.get("neg_prompt"),
     )
+
+def compress_webp_frame(arr_bgr, max_bytes=12000, allow_oversize=False):
+    """Fast full-resolution WebP for bandwidth-limited WebSocket delivery."""
+    max_bytes = 12000 if max_bytes is None else max_bytes
+    image = Image.fromarray(cv2.cvtColor(arr_bgr, cv2.COLOR_BGR2RGB))
+    qualities = (60, 40, 25, 15, 8, 1, 0)
+    key = (*arr_bgr.shape[:2], max_bytes)
+    hint, count = webp_quality_hints.pop(key, (0, 0))
+    start = max(0, hint - 1) if count % 30 == 0 else hint
+    smallest, best_index = None, start
+    for index in range(start, len(qualities)):
+        output = io.BytesIO()
+        # Method 0 favors latency; the default method 4 is appreciably slower.
+        image.save(output, format='WEBP', quality=qualities[index], method=0)
+        encoded = output.getvalue()
+        if smallest is None or len(encoded) < len(smallest):
+            smallest, best_index = encoded, index
+        if len(encoded) <= max_bytes:
+            break
+    if len(webp_quality_hints) >= 32:
+        del webp_quality_hints[next(iter(webp_quality_hints))]
+    webp_quality_hints[key] = (best_index, count + 1)
+    if len(smallest) <= max_bytes or (allow_oversize and len(smallest) <= 255 * OUTPUT_CHUNK_BYTES):
+        return smallest
+    raise ValueError('Could not encode full-resolution WebP within the frame byte budget')
+
 
 def compress_frame(arr_bgr, max_bytes=None, allow_oversize=False):
     """
@@ -837,6 +866,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
     frame_credit.set()
     ack_enabled, frame_window = False, 3
     video_quality = 'balanced'
+    image_codec = 'jpeg'
     outstanding_frames = {}
     stop_event = asyncio.Event()
     frame_available = asyncio.Event()
@@ -999,6 +1029,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 started = time.perf_counter()
                 revision = pipeline_revision
                 frame_quality = video_quality
+                frame_codec = image_codec
                 budget = video_byte_budget(output_width, output_height, frame_quality)
                 raw_output = rtc_active()
                 # LTX pop/JPEG work is CPU-only and can overlap the single GPU
@@ -1007,11 +1038,14 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 if raw_output:
                     result = await loop.run_in_executor(executor, partial(process_frame, mode, frame_bytes,
                                                                           raw_output=True))
+                elif frame_codec == 'webp':
+                    result = await loop.run_in_executor(executor, partial(process_frame, mode, frame_bytes,
+                                                                          budget, image_codec='webp'))
                 else:
                     result = await loop.run_in_executor(executor, process_frame, mode, frame_bytes, budget)
                 # Discard a completed frame if its mode was switched during inference.
                 if (result is not None and current_mode == mode and revision == pipeline_revision
-                        and raw_output == rtc_active()):
+                        and raw_output == rtc_active() and frame_codec == image_codec):
                     jpg_bytes, inf_ms, process_ms = result
                     if raw_output:
                         rtc.track.put(jpg_bytes)
@@ -1025,11 +1059,12 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                                         mode=mode, strength=current_strength,
                                         frame_bytes=0 if raw_output else len(jpg_bytes),
                                         video_quality=frame_quality, send_ms=round(send_ms, 1),
+                                        image_codec=frame_codec,
                                         credit_wait_ms=round(credit_ms + extra_credit_ms, 1))
                     if frame_count % 100 == 1:
                         logger.info("%s: frame #%d (inference %.1fms, processing %.1fms, transport=%s)",
                                     mode, frame_count, inf_ms, process_ms,
-                                    'WebRTC VP8' if raw_output else f'JPEG {len(jpg_bytes)} bytes')
+                                    'WebRTC VP8' if raw_output else f'{frame_codec.upper()} {len(jpg_bytes)} bytes')
                 if mode in ('txt2img', 'world', 'krea', 'ltx'):
                     fps = min(max_stream_fps, ltx_backend.playback_fps) if mode == 'ltx' else max_stream_fps
                     await asyncio.sleep(max(0.0, 1.0 / fps - (time.perf_counter() - started)))
@@ -1083,6 +1118,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             "vram": vram, "temp": temp,
             'resolution_locked': resolution_locked(), 'latency_probe': True, 'frame_ack': True,
             'video_quality_profiles': list(VIDEO_QUALITY_LIMITS),
+            'image_codecs': ['jpeg', 'webp'] if pillow_features.check('webp') else ['jpeg'],
             'video_transports': ['websocket', 'webrtc'] if webrtc_available() else ['websocket'],
             'backend': backend_name,
             'supported_modes': ['ltx'] if is_ltx_backend else ['krea'] if is_krea_backend else ['world'] if is_world_backend else ['txt2img', 'img2img'],
@@ -1115,13 +1151,18 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         logger.info('Waypoint seed upload requested')
                     elif data.get('type') == 'client_options':
                         quality = data.get('video_quality', video_quality)
-                        if quality not in VIDEO_QUALITY_LIMITS:
+                        if not isinstance(quality, str) or quality not in VIDEO_QUALITY_LIMITS:
                             raise ValueError('Invalid video quality')
                         value = data.get('frame_window', 3)
                         if data.get('frame_ack') is True and (not isinstance(value, int)
                                 or isinstance(value, bool) or not 1 <= value <= 6):
                             raise ValueError('Invalid frame window')
-                        video_quality = quality
+                        codecs = data.get('image_codecs', [])
+                        if not isinstance(codecs, list) or any(not isinstance(item, str) for item in codecs):
+                            raise ValueError('Invalid image codec capabilities')
+                        use_webp = quality == 'compact' and 'webp' in codecs and pillow_features.check('webp')
+                        video_quality = 'fast' if quality == 'compact' and not use_webp else quality
+                        image_codec = 'webp' if use_webp else 'jpeg'
                         transport = data.get('video_transport')
                         if transport is not None and transport not in ('websocket', 'webrtc'):
                             raise ValueError('Invalid video transport')

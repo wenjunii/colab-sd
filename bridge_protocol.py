@@ -27,13 +27,13 @@ OUTPUT_PRESETS = (
 OUTPUT_RESOLUTIONS = tuple((width, height) for _, _, width, height in OUTPUT_PRESETS)
 LTX_OUTPUT_RESOLUTIONS = ((512, 512), (768, 512), (1024, 576), (1024, 768))
 LTX_FRAME_COUNTS = (17, 33, 65, 121)
-VIDEO_QUALITY_LIMITS = {'fast': 48000, 'balanced': 64000, 'detail': None}
+VIDEO_QUALITY_LIMITS = {'compact': 12000, 'fast': 48000, 'balanced': 64000, 'detail': None}
 
 
 def video_byte_budget(width, height, quality='balanced'):
     """Select transport compression independently of generation dimensions."""
     if quality not in VIDEO_QUALITY_LIMITS:
-        raise ValueError('Choose fast, balanced, or detail video quality')
+        raise ValueError('Choose compact, fast, balanced, or detail video quality')
     scaled = max(48000, round(48000 * width * height / (512 * 512)))
     limit = VIDEO_QUALITY_LIMITS[quality]
     return min(scaled, limit) if limit is not None else scaled
