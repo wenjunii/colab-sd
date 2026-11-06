@@ -88,6 +88,17 @@ class LTXChecks(unittest.TestCase):
         self.assertEqual(backend.progress()['ltx_clip'], 1)
         self.assertEqual(backend.pipe.call_args.kwargs['num_frames'], 17)
 
+    def test_bfloat16_decoder_frames_convert_to_valid_bgr_bytes(self):
+        import torch
+        backend = fake_backend()
+        pixels = torch.zeros((17, 512, 512, 3), dtype=torch.bfloat16)
+        pixels[..., 0], pixels[..., 1] = 1.0, 0.5
+        backend.pipe.side_effect = lambda **_: SimpleNamespace(video=iter([pixels]))
+        backend.configure({'prompt_a': 'red and green', 'ltx_generate': True})
+        frame, _ = backend.next_frame()
+        self.assertEqual(frame.dtype, np.uint8)
+        self.assertEqual(tuple(frame[0, 0]), (0, 128, 255))
+
     def test_pause_next_prompt_seed_and_image_are_applied_at_clip_request(self):
         backend = fake_backend()
         image_condition = object()

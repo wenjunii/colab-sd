@@ -150,7 +150,12 @@ class LTXBackend:
                         frame_rate=24.0, num_frames=self.num_frames, images=[self.image] if self.image else [],
                         enhance_prompt=False)
                     for chunk in result.video:
-                        batch = chunk.detach().cpu().numpy() if hasattr(chunk, 'detach') else np.asarray(chunk)
+                        if hasattr(chunk, 'detach'):
+                            pixels = chunk.detach().cpu()
+                            # NumPy cannot represent BF16 decoder output directly.
+                            batch = (pixels.float() if pixels.is_floating_point() else pixels).numpy()
+                        else:
+                            batch = np.asarray(chunk)
                         if (batch.ndim != 4 or batch.shape[1:] != (self.size[1], self.size[0], 3)
                                 or not len(batch) or len(self.frames) + len(batch) > self.num_frames
                                 or not np.isfinite(batch).all()):
