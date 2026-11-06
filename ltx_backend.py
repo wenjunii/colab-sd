@@ -47,6 +47,11 @@ def validate_ltx_controls(data, size):
             if not isinstance(data[name], bool):
                 raise ValueError(name + ' must be a boolean')
             clean[name] = data[name]
+    if 'ltx_refresh_every' in data:
+        value = integer(data['ltx_refresh_every'], 'ltx_refresh_every')
+        if not 0 <= value <= 32:
+            raise ValueError('LTX refresh interval must be 0 to 32 clips')
+        clean['ltx_refresh_every'] = value
     return clean
 
 
@@ -64,12 +69,15 @@ class LTXBackend:
     engine = 'LTX-2.5 distilled (FP8-cast / CPU offload)'
 
     def __init__(self, pipe, torch_module, size=(512, 512), num_frames=33, image=None,
-                 continuous=False, continue_scene=False, image_factory=None, workspace=None, profile='low_memory'):
+                 continuous=False, continue_scene=False, image_factory=None, workspace=None, profile='low_memory',
+                 refresh_every=0):
         if size not in SIZES or isinstance(num_frames, bool) or num_frames not in FRAME_COUNTS:
             raise ValueError('Choose an LTX size and clip length preset')
         self.pipe, self.torch, self.size, self.num_frames = pipe, torch_module, size, num_frames
         self.image = image
         self.continuous, self.continue_scene = continuous, continue_scene
+        self.refresh_every = validate_ltx_controls({'ltx_refresh_every': refresh_every}, size)['ltx_refresh_every']
+        self._last_refresh = False
         self.image_factory, self.workspace, self.profile = image_factory, workspace, profile
         self.running, self.sequence_index, self.last_seed = False, 0, 42
         self._last_rgb, self._carry_directory = None, None
@@ -77,10 +85,15 @@ class LTXBackend:
                        else 'LTX-2.5 distilled (FP8-cast / CPU offload / cached prompt)')
         self.prompt, self.seed = '', 42
         self.frames = deque()
+        self._prefetched = deque()
+        self._rendering, self._primed = False, False
+        self.revision, self._applied_revision = 0, -1
+        self._warm_seconds = deque(maxlen=4)
+        self.playback_fps = 24.0
         self.requested, self.paused, self.failed = False, False, False
         self.clip_index, self.batch_ms = 0, 0.0
         self.phase, self.phase_started = 'awaiting_prompt', time.monotonic()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     @classmethod
     def load(cls, root):
@@ -104,7 +117,7 @@ class LTXBackend:
             image = str(Path(image).expanduser().resolve(strict=True))
             if cv2.imread(image) is None:
                 raise ValueError('LTX_INPUT_IMAGE must be a readable image file')
-            image = ImageConditioningInput.at(image, 0, 0.8)
+            image = ImageConditioningInput.at(image, 0, 0.8, crf=0)
         models = download_models(root)
         paths = ModelPaths.from_split(transformer_path=str(models / TRANSFORMER),
             text_encoder_path=str(models / TEXT_ENCODER), video_vae_path=str(models / VIDEO_VAE),
@@ -118,7 +131,8 @@ class LTXBackend:
         return cls(pipe, torch, size, frames, image,
             continuous=os.environ.get('LTX_CONTINUOUS', '1') == '1',
             continue_scene=os.environ.get('LTX_CONTINUE_SCENE', '1') == '1',
-            image_factory=ImageConditioningInput.at, workspace=Path(root), profile=profile)
+            image_factory=ImageConditioningInput.at, workspace=Path(root), profile=profile,
+            refresh_every=integer(os.environ.get('LTX_REFRESH_EVERY', '4'), 'LTX_REFRESH_EVERY'))
 
     def _phase(self, name):
         with self._lock:
@@ -126,36 +140,77 @@ class LTXBackend:
 
     @property
     def can_generate(self):
-        return not self.paused and not self.failed and (bool(self.frames) or self.requested
-                                                       or (self.continuous and self.running))
+        with self._lock:
+            return not self.paused and not self.failed and (bool(self.frames) or self.requested
+                                                           or (self.continuous and self.running))
+
+    @property
+    def needs_render(self):
+        with self._lock:
+            return (not self.paused and not self.failed and not self._rendering
+                    and not self._prefetched and (self.requested or (self.continuous and self.running)))
+
+    @property
+    def can_deliver(self):
+        with self._lock:
+            return (not self.paused and not self.failed and bool(self.frames)
+                    and (self._primed or not self.continuous))
 
     def configure(self, data):
         clean = validate_ltx_controls(data, self.size)
-        changed = (clean.get('prompt_a', self.prompt), clean.get('seed', self.seed)) != (self.prompt, self.seed)
-        self.prompt, self.seed = clean.get('prompt_a', self.prompt), clean.get('seed', self.seed)
-        self.paused = clean.get('ltx_paused', self.paused)
-        self.continuous = clean.get('ltx_continuous', self.continuous)
-        self.continue_scene = clean.get('ltx_continue_scene', self.continue_scene)
-        if changed:
-            self.sequence_index, self._last_rgb = 0, None
-        if clean.get('ltx_generate'):
-            if not self.prompt:
+        with self._lock:
+            changed = (clean.get('prompt_a', self.prompt), clean.get('seed', self.seed)) != (self.prompt, self.seed)
+            self.prompt, self.seed = clean.get('prompt_a', self.prompt), clean.get('seed', self.seed)
+            self.paused = clean.get('ltx_paused', self.paused)
+            if self.continuous and clean.get('ltx_continuous') is False:
+                if self._prefetched:
+                    # Resume from the ending image of playback, rather than an
+                    # unseen lookahead clip that the user just discarded.
+                    self._last_rgb = self.frames[-1].copy() if self.frames else None
+                self._prefetched.clear()
+            self.continuous = clean.get('ltx_continuous', self.continuous)
+            self.continue_scene = clean.get('ltx_continue_scene', self.continue_scene)
+            self.refresh_every = clean.get('ltx_refresh_every', self.refresh_every)
+            restart = clean.get('ltx_generate', False)
+            if restart and not self.prompt:
                 raise ValueError('Submit Prompt A before generating a clip')
-            self.frames.clear()
-            self.requested, self.failed = True, False
-            self.running, self.sequence_index, self._last_rgb = True, 0, None
-        if self.phase != 'generating' and not self.failed:
-            self._phase('paused' if self.paused else 'streaming' if self.frames else
-                        'next_clip' if self.continuous and self.running else 'awaiting_prompt')
+            if changed or restart:
+                # An in-flight render owns its snapshot. Never let it refill a
+                # new prompt's queues or restore its old continuation image.
+                self.revision += 1
+                self.frames.clear()
+                self._prefetched.clear()
+                self.sequence_index, self._last_rgb, self._primed = 0, None, False
+                self._warm_seconds.clear()
+                if restart:
+                    self.running, self.failed = True, False
+                self.requested = self.running and not self.failed
+            self._refresh_phase()
+            return changed or restart
+
+    def _refresh_phase(self):
+        name = ('error' if self.failed else 'paused' if self.paused else
+                'buffering' if self.frames and self.continuous and not self._primed else
+                'streaming' if self.frames else 'generating' if self._rendering else
+                'next_clip' if self.requested or (self.continuous and self.running) else 'awaiting_prompt')
+        if self.phase != name:
+            self._phase(name)
 
     def release_controls(self):
-        self.frames.clear()
-        self.requested = False
-        self.running, self._last_rgb = False, None
+        with self._lock:
+            self.revision += 1
+            self.frames.clear()
+            self._prefetched.clear()
+            self.requested = False
+            self.running, self._last_rgb, self._primed = False, None, False
+            if not self._rendering:
+                self._cleanup_carry()
+            self._phase('awaiting_prompt')
+
+    def _cleanup_carry(self):
         if self._carry_directory is not None:
             self._carry_directory.cleanup()
             self._carry_directory = None
-        self._phase('awaiting_prompt')
 
     def close(self):
         self.release_controls()
@@ -165,6 +220,10 @@ class LTXBackend:
             self.pipe.stage.release_transformer()
 
     def _clip_image(self):
+        self._last_refresh = bool(self.sequence_index and self.refresh_every
+                                  and self.sequence_index % self.refresh_every == 0)
+        if self._last_refresh:
+            return self.image
         if not (self.continue_scene and self._last_rgb is not None and self.image_factory):
             return self.image
         if self._carry_directory is None:
@@ -172,76 +231,134 @@ class LTXBackend:
         path = Path(self._carry_directory.name) / 'last-frame.png'
         if not cv2.imwrite(str(path), cv2.cvtColor(self._last_rgb, cv2.COLOR_RGB2BGR)):
             raise ValueError('Could not write the owned LTX continuation image')
-        return self.image_factory(str(path), 0, 0.8)
+        # Feedback frames already passed through the VAE. Avoid introducing
+        # upstream's default lossy H.264 re-compression on every continuation.
+        return self.image_factory(str(path), 0, 0.8, crf=0)
 
     def progress(self):
         with self._lock:
-            phase, elapsed = self.phase, time.monotonic() - self.phase_started
+            return self._progress()
+
+    def _progress(self):
+        phase, elapsed = self.phase, time.monotonic() - self.phase_started
         labels = {'awaiting_prompt': 'LTX ready; Submit Prompt A, then Generate Clip on the LTX page',
                   'generating': 'Generating LTX clip; holding last frame',
+                  'buffering': 'Preparing LTX lookahead and measuring sustainable playback; holding last frame',
                   'next_clip': 'Continuous LTX: preparing the next clip; holding last frame',
                   'streaming': 'Playing generated LTX clip', 'paused': 'LTX paused',
                   'error': 'LTX clip failed; inspect logs, then Generate Clip to retry'}
         encoder = getattr(self.pipe, 'prompt_encoder', None)
         cached = isinstance(encoder, CachedPromptEncoder)
         return {'world_phase': phase, 'world_status': labels[phase] + (f' ({elapsed:.0f}s)' if phase == 'generating' else ''),
-                'ltx_clip': self.clip_index, 'ltx_clip_frames': self.num_frames, 'ltx_queued_frames': len(self.frames),
+                'ltx_clip': self.clip_index, 'ltx_clip_frames': self.num_frames,
+                'ltx_queued_frames': len(self.frames) + len(self._prefetched),
                 'ltx_paused': self.paused, 'ltx_input_image': bool(self.image),
                 'ltx_continuous': self.continuous, 'ltx_continue_scene': self.continue_scene,
                 'ltx_generation_ms': round(self.batch_ms, 1), 'ltx_profile': self.profile,
                 'ltx_generated_fps': round(self.num_frames * 1000 / self.batch_ms, 3) if self.batch_ms else 0,
                 'ltx_seed': self.last_seed,
+                'ltx_playback_fps': round(self.playback_fps, 3), 'ltx_rendering': self._rendering,
+                'ltx_prompt_pending': self.running and self._applied_revision != self.revision,
+                'ltx_prompt_revision': self.revision,
+                'ltx_refresh_every': self.refresh_every, 'ltx_quality_refresh': self._last_refresh,
                 'ltx_prompt_cache_hit': encoder.cache_hit if cached else False,
                 'ltx_prompt_ms': round(encoder.elapsed_ms, 1) if cached else 0}
 
-    def next_frame(self):
-        if not self.can_generate:
-            return None
-        if not self.frames:
-            self.requested = False
-            self._phase('generating')
-            started = time.perf_counter()
-            try:
+    def render_next_clip(self):
+        """GPU-worker operation; delivery and control updates never wait on it."""
+        with self._lock:
+            if not self.needs_render:
+                return False
+            automatic = not self.requested
+            self.requested, self._rendering = False, True
+            revision, prompt = self.revision, self.prompt
+            sequence = self.sequence_index
+            seed = (self.seed + sequence) % 4294967296
+            self._refresh_phase()
+        started = time.perf_counter()
+        frames = deque()
+        try:
+            with self._lock:
                 image = self._clip_image()
-                self.last_seed = (self.seed + self.sequence_index) % 4294967296
-                with self.torch.inference_mode():
-                    result = self.pipe(prompt=self.prompt, seed=self.last_seed, height=self.size[1], width=self.size[0],
-                        frame_rate=24.0, num_frames=self.num_frames, images=[image] if image else [],
-                        enhance_prompt=False)
-                    for chunk in result.video:
-                        if hasattr(chunk, 'detach'):
-                            pixels = chunk.detach().cpu()
-                            # NumPy cannot represent BF16 decoder output directly.
-                            batch = (pixels.float() if pixels.is_floating_point() else pixels).numpy()
-                        else:
-                            batch = np.asarray(chunk)
-                        if (batch.ndim != 4 or batch.shape[1:] != (self.size[1], self.size[0], 3)
-                                or not len(batch) or len(self.frames) + len(batch) > self.num_frames
-                                or not np.isfinite(batch).all()):
-                            raise ValueError('LTX returned invalid or excessive video frames')
-                        if np.issubdtype(batch.dtype, np.floating):
-                            batch = (np.clip(batch, 0, 1) * 255).round().astype(np.uint8)
-                        elif batch.dtype != np.uint8:
-                            raise ValueError('LTX returned an unsupported pixel dtype')
-                        self.frames.extend(np.ascontiguousarray(batch))
-                    if len(self.frames) != self.num_frames:
-                        raise ValueError('LTX returned an unexpected clip length')
-                    self._last_rgb = self.frames[-1].copy()
-                    del result
+            with self.torch.inference_mode():
+                result = self.pipe(prompt=prompt, seed=seed, height=self.size[1], width=self.size[0],
+                    frame_rate=24.0, num_frames=self.num_frames, images=[image] if image else [],
+                    enhance_prompt=False)
+                for chunk in result.video:
+                    if hasattr(chunk, 'detach'):
+                        pixels = chunk.detach().cpu()
+                        # NumPy cannot represent BF16 decoder output directly.
+                        batch = (pixels.float() if pixels.is_floating_point() else pixels).numpy()
+                    else:
+                        batch = np.asarray(chunk)
+                    if (batch.ndim != 4 or batch.shape[1:] != (self.size[1], self.size[0], 3)
+                            or not len(batch) or len(frames) + len(batch) > self.num_frames
+                            or not np.isfinite(batch).all()):
+                        raise ValueError('LTX returned invalid or excessive video frames')
+                    if np.issubdtype(batch.dtype, np.floating):
+                        batch = (np.clip(batch, 0, 1) * 255).round().astype(np.uint8)
+                    elif batch.dtype != np.uint8:
+                        raise ValueError('LTX returned an unsupported pixel dtype')
+                    frames.extend(np.ascontiguousarray(batch))
+                if len(frames) != self.num_frames:
+                    raise ValueError('LTX returned an unexpected clip length')
+                del result
+            with self._lock:
+                if revision != self.revision or not self.running or (automatic and not self.continuous):
+                    return False
+                if self._prefetched:
+                    raise RuntimeError('LTX lookahead queue is already full')
+                if self.frames:
+                    self._prefetched = frames
+                else:
+                    self.frames = frames
+                self._last_rgb = frames[-1].copy()
                 self.batch_ms = (time.perf_counter() - started) * 1000
                 self.clip_index += 1
                 self.sequence_index += 1
-                self._phase('streaming')
+                self.last_seed, self._applied_revision = seed, revision
+                # First render includes cold loading and text encoding. Use a
+                # separate warm lookahead sample to avoid pacing from that cost.
+                if sequence > 0:
+                    self._warm_seconds.append(self.batch_ms / 1000)
+                    self.playback_fps = min(24.0, self.num_frames / (max(max(self._warm_seconds), 0.001) * 1.2))
+                    self._primed = True
                 logger.info('LTX clip %d: %d native frames in %.2fs (%.2f generated FPS)', self.clip_index,
                             self.num_frames, self.batch_ms / 1000, self.num_frames * 1000 / self.batch_ms)
-            except Exception as exc:
+                return True
+        except Exception as exc:
+            if self.profile == 'resident':
+                self.pipe.stage.release_transformer()
+            with self._lock:
+                if revision != self.revision:
+                    logger.warning('Discarded failed obsolete LTX render: %s', type(exc).__name__)
+                    return False
                 self.frames.clear()
+                self._prefetched.clear()
                 self.failed = True
-                if self.profile == 'resident':
-                    self.pipe.stage.release_transformer()
-                self._phase('error')
-                raise ValueError('LTX clip failed; inspect server logs before retrying') from exc
-        frame = cv2.cvtColor(self.frames.popleft(), cv2.COLOR_RGB2BGR)
+            raise ValueError('LTX clip failed; inspect server logs before retrying') from exc
+        finally:
+            with self._lock:
+                self._rendering = False
+                if not self.running:
+                    self._cleanup_carry()
+                self._refresh_phase()
+
+    def pop_frame(self, require_primed=True):
+        """CPU-only, nonblocking delivery while another clip renders on GPU."""
+        with self._lock:
+            if not self.can_generate or not self.frames or (require_primed and not self.can_deliver):
+                return None
+            rgb, duration = self.frames.popleft(), self.batch_ms
+            if not self.frames and self._prefetched:
+                self.frames, self._prefetched = self._prefetched, deque()
+            self._refresh_phase()
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), duration
+
+    def next_frame(self):
+        """Blocking single-thread benchmark path; server uses render/pop separately."""
+        if not self.can_generate:
+            return None
         if not self.frames:
-            self._phase('next_clip' if self.continuous and self.running else 'awaiting_prompt')
-        return frame, self.batch_ms
+            self.render_next_clip()
+        return self.pop_frame(require_primed=False)

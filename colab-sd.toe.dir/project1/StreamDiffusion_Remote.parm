@@ -51,4 +51,6 @@ Ltxcontinuous 67108928 on
 Ltxchain 67108928 on
 Ltxspeed 67109184 "0.00 new FPS"
 Ltxinfo 67109184 "Waiting for LTX"
+Ltxplayback 67109184 "Waiting for lookahead"
+Ltxrefresh 67108928 4
 ?

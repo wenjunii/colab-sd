@@ -121,7 +121,7 @@ stream_txt2img = None
 stream_img2img = None
 pipeline_ready = False
 # The two modes share model weights and mutable state. Keep all GPU work on
-# one worker, including control updates, without blocking WebSocket handling.
+# one worker without blocking WebSocket handling. LTX CPU-only controls use revisions.
 model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diffusion")
 try:
     max_stream_fps = float(os.environ.get("MAX_STREAM_FPS", "60"))
@@ -372,7 +372,7 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
     if is_world_backend or is_krea_backend or is_ltx_backend:
         if is_world_backend and frame_bytes is not None:
             world_backend.set_seed_image(frame_bytes)
-        result = stateful_backend().next_frame()
+        result = ltx_backend.pop_frame() if is_ltx_backend else stateful_backend().next_frame()
         if result is None:
             return None
         out_bgr, batch_ms = result
@@ -407,14 +407,14 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
 
 
 def apply_controls(data):
-    """Apply an entire update between inference calls on the same worker."""
+    """Apply model controls; LTX only updates revisioned CPU state here."""
     global current_mode, current_seed, output_width, output_height, last_pipeline_error, pipeline_ready
     global pipeline_revision, current_prompt_a
     if is_ltx_backend:
         data = validated_controls(data, (output_width, output_height))
-        ltx_backend.configure(data)
+        reset = ltx_backend.configure(data)
         current_seed, current_prompt_a = ltx_backend.seed, ltx_backend.prompt
-        if data.get('ltx_generate'):
+        if reset:
             pipeline_revision += 1
         return
     if is_krea_backend:
@@ -921,7 +921,12 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                     backend = 'TensorRT' if enable_tensorrt else 'PyTorch'
                     await send_json({'type': 'status', 'status': f'Loading {width} x {height} {backend} output...',
                                      'ready': False, 'engine': f'{backend} (Preparing)'})
-                await loop.run_in_executor(model_executor, apply_controls, data)
+                if is_ltx_backend:
+                    # LTX configuration only mutates revisioned CPU state.
+                    # Prompt edits/pause must not queue behind a whole GPU clip.
+                    apply_controls(data)
+                else:
+                    await loop.run_in_executor(model_executor, apply_controls, data)
                 await send_json({"type": "configured", "status": "Connected (Streaming)",
                                  "width": output_width, "height": output_height, "engine": engine_for_mode(),
                                  "ready": pipeline_ready, "mode": current_mode,
@@ -960,7 +965,7 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         continue
                     if mode == 'world' and pending_frame is not None:
                         frame_bytes, pending_frame = pending_frame, None
-                    elif not stateful_backend().can_generate:
+                    elif not (ltx_backend.can_deliver if mode == 'ltx' else stateful_backend().can_generate):
                         await asyncio.sleep(0.02)
                         continue
 
@@ -976,7 +981,10 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                 revision = pipeline_revision
                 frame_quality = video_quality
                 budget = video_byte_budget(output_width, output_height, frame_quality)
-                result = await loop.run_in_executor(model_executor, process_frame, mode, frame_bytes, budget)
+                # LTX pop/JPEG work is CPU-only and can overlap the single GPU
+                # worker rendering one lookahead clip. Other backends stay serial.
+                executor = None if mode == 'ltx' else model_executor
+                result = await loop.run_in_executor(executor, process_frame, mode, frame_bytes, budget)
                 # Discard a completed frame if its mode was switched during inference.
                 if result is not None and current_mode == mode and revision == pipeline_revision:
                     jpg_bytes, inf_ms, process_ms = result
@@ -990,7 +998,8 @@ async def websocket_stream_endpoint(websocket: WebSocket):
                         logger.info("%s: frame #%d (inference %.1fms, processing %.1fms, %d bytes)",
                                     mode, frame_count, inf_ms, process_ms, len(jpg_bytes))
                 if mode in ('txt2img', 'world', 'krea', 'ltx'):
-                    await asyncio.sleep(max(0.0, 1.0 / max_stream_fps - (time.perf_counter() - started)))
+                    fps = min(max_stream_fps, ltx_backend.playback_fps) if mode == 'ltx' else max_stream_fps
+                    await asyncio.sleep(max(0.0, 1.0 / fps - (time.perf_counter() - started)))
             except (WebSocketDisconnect, RuntimeError, OSError):
                 logger.exception("Streaming stopped in %s", mode)
                 stop_event.set()
@@ -1000,6 +1009,16 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             except Exception:
                 logger.exception("Frame processing failed in %s", mode)
                 await asyncio.sleep(0.05)
+
+    async def ltx_render_loop():
+        while not stop_event.is_set():
+            if ack_enabled and pipeline_ready and current_mode == 'ltx' and ltx_backend.needs_render:
+                try:
+                    await loop.run_in_executor(model_executor, ltx_backend.render_next_clip)
+                except ValueError:
+                    logger.exception('LTX render failed; waiting for an explicit retry')
+            else:
+                await asyncio.sleep(0.02)
 
     async def supervise(coroutine):
         try:
@@ -1039,6 +1058,8 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         })
         modes = ('ltx',) if is_ltx_backend else ('krea',) if is_krea_backend else ('world',) if is_world_backend else ('txt2img', 'img2img')
         tasks = [asyncio.create_task(supervise(generation_loop(mode))) for mode in modes]
+        if is_ltx_backend:
+            tasks.append(asyncio.create_task(supervise(ltx_render_loop())))
         tasks.append(asyncio.create_task(supervise(telemetry_loop())))
         tasks.append(asyncio.create_task(supervise(control_loop())))
         while not stop_event.is_set():
@@ -1118,6 +1139,10 @@ async def websocket_stream_endpoint(websocket: WebSocket):
         logger.exception("WebSocket error")
     finally:
         stop_event.set()
+        if is_ltx_backend:
+            # Invalidate a render immediately; its worker completion cannot refill
+            # queues or restore an old scene after this controller disconnects.
+            ltx_backend.release_controls()
         for task in tasks:
             task.cancel()
         backend_to_release = stateful_backend() if is_world_backend or is_krea_backend or is_ltx_backend else None

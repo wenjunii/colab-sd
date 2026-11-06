@@ -1,0 +1,99 @@
+{
+  "url_kind": "TLS tunnel",
+  "clips_per_prompt": 6,
+  "segments": [
+    {
+      "prompt": "A cinematic close-up of a red toy car driving on a mountain road in daylight",
+      "frames": 198,
+      "first_frame_seconds": 216.329,
+      "delivery_fps": 2.779,
+      "interval_median_seconds": 0.359,
+      "interval_max_seconds": 0.609,
+      "clip_boundary_intervals_seconds": [
+        0.375,
+        0.344,
+        0.343,
+        0.375,
+        0.375
+      ],
+      "last_stats": {
+        "ltx_clip": 7,
+        "ltx_clip_frames": 33,
+        "ltx_queued_frames": 34,
+        "ltx_paused": false,
+        "ltx_input_image": false,
+        "ltx_continuous": true,
+        "ltx_continue_scene": true,
+        "ltx_generation_ms": 8774.0,
+        "ltx_profile": "resident",
+        "ltx_generated_fps": 3.761,
+        "ltx_seed": 48,
+        "ltx_playback_fps": 3.123,
+        "ltx_rendering": false,
+        "ltx_prompt_pending": false,
+        "ltx_prompt_revision": 2,
+        "ltx_refresh_every": 4,
+        "ltx_quality_refresh": false,
+        "ltx_prompt_cache_hit": true,
+        "ltx_prompt_ms": 0.0
+      }
+    },
+    {
+      "prompt": "A wide shot of a white sailboat on a blue tropical ocean in daylight",
+      "frames": 198,
+      "first_frame_seconds": 212.906,
+      "delivery_fps": 2.907,
+      "interval_median_seconds": 0.328,
+      "interval_max_seconds": 0.609,
+      "clip_boundary_intervals_seconds": [
+        0.375,
+        0.375,
+        0.313,
+        0.36,
+        0.375
+      ],
+      "last_stats": {
+        "ltx_clip": 14,
+        "ltx_clip_frames": 33,
+        "ltx_queued_frames": 35,
+        "ltx_paused": false,
+        "ltx_input_image": false,
+        "ltx_continuous": true,
+        "ltx_continue_scene": true,
+        "ltx_generation_ms": 8950.4,
+        "ltx_profile": "resident",
+        "ltx_generated_fps": 3.687,
+        "ltx_seed": 48,
+        "ltx_playback_fps": 3.073,
+        "ltx_rendering": false,
+        "ltx_prompt_pending": false,
+        "ltx_prompt_revision": 3,
+        "ltx_refresh_every": 4,
+        "ltx_quality_refresh": false,
+        "ltx_prompt_cache_hit": true,
+        "ltx_prompt_ms": 0.0
+      }
+    }
+  ],
+  "size": [
+    768,
+    512
+  ],
+  "frames_per_clip": 33,
+  "engine": "LTX-2.5 distilled (FP8 resident / cached prompt)",
+  "local_test_date": "2026-11-06",
+  "timezone": "America/New_York",
+  "bridge_runtime_revision": "b2fe180191d7945e566a44633f0ecec3b7103591",
+  "runtime_source_revision": "4f521619ae0029e8fbb64d555030c2b121a33b4f",
+  "model_revision": "49b093a39c19169a8a81721dcc541e07e945232f",
+  "gpu": "Colab A100 40 GB",
+  "measurement_kind": "Client receipt through the Colab Cloudflare TLS tunnel on the home connection; immediate ACKs, window 1",
+  "visual_verification": "Decoded sample JPEGs show the car replaced by a sailboat after changing Prompt A; both remained at native 768x512.",
+  "limits": [
+    "Initial and changed-prompt latency includes lazy model/text loading and two-clip priming.",
+    "Steady delivery slows model motion; it does not establish 24 newly generated FPS.",
+    "Only six clips per prompt and two prompts were measured; arbitrary network/render stalls and indefinite visual stability are not guaranteed.",
+    "Periodic refresh at four clips can change the scene. Pixel-feedback drift remains possible between refreshes.",
+    "This is not a controlled image-quality comparison with the earlier pipeline."
+  ]
+}
