@@ -64,5 +64,7 @@ jobs:
         run: python -B check_sdxl_stream.py
       - name: Import pinned Krea HF runtime without GPU packages or weights
         run: python -B check_krea_imports.py
+      - name: Check pinned LTX API and weight metadata without GPU packages or weights
+        run: python -B check_ltx_imports.py
       - run: git diff --check
       - run: python audit_dependencies.py

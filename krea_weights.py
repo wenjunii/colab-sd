@@ -162,7 +162,7 @@ def copy_checkpoint(source, partial, expected):
         raise InvalidCheckpoint(f'invalid Safetensors header: {exc}') from exc
 
 
-def stage_snapshot(snapshot, target, repo, revision, weights, small_files):
+def stage_snapshot(snapshot, target, repo, revision, weights, small_files, label='Krea'):
     """Reuse validated local copies; repair only invalid persistent checkpoints once."""
     from huggingface_hub import hf_hub_download
     snapshot, target = Path(snapshot), Path(target).resolve()
@@ -189,7 +189,7 @@ def stage_snapshot(snapshot, target, repo, revision, weights, small_files):
             pending.append(name)
     required = sum(entries[name][0] for name in pending)
     if required and shutil.disk_usage(target).free < required + 1024 ** 3:
-        raise RuntimeError(f'Krea local staging needs {required / 1024**3:.1f} GiB plus 1 GiB free under '
+        raise RuntimeError(f'{label} local staging needs {required / 1024**3:.1f} GiB plus 1 GiB free under '
                            f'{target}. Persistent model weights were preserved; use a VM with more disk space.')
     with tempfile.TemporaryDirectory(prefix='.stage-', dir=target) as directory:
         scratch = Path(directory).resolve()
@@ -207,7 +207,7 @@ def stage_snapshot(snapshot, target, repo, revision, weights, small_files):
                 try:
                     copier(resolve_cached_file(repaired, snapshot, repo, revision), partial, entries[name])
                 except InvalidCheckpoint as failure:
-                    raise RuntimeError(f'Krea asset still invalid after one download: {name}. '
+                    raise RuntimeError(f'{label} asset still invalid after one download: {name}. '
                                        'Check Drive storage/quota and retry; other cached models were preserved.') from failure
             destination = owned_path(target, name)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -221,6 +221,6 @@ def stage_snapshot(snapshot, target, repo, revision, weights, small_files):
         marker = scratch / 'validated.json'
         marker.write_text(json.dumps(validated, indent=2) + '\n', encoding='utf-8')
         marker.replace(receipt)
-    logger.info('Krea local model files ready: %s (%d checkpoint(s) reused)',
-                target, len(weights) - sum(name in weights for name in pending))
+    logger.info('%s local model files ready: %s (%d checkpoint(s) reused)',
+                label, target, len(weights) - sum(name in weights for name in pending))
     return target

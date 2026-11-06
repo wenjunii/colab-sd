@@ -21,8 +21,8 @@ class BridgeSession:
                  server_script='server.py', python_executable=None, cloudflared=None, access_token=None,
                  output_size=(512, 512), allow_tensorrt_resize=False, engine_cache=None, reuse_engines=True,
                  tunnel_protocol='auto', backend='sd-turbo', server_environment=None, diffusion_model='sd-turbo'):
-        if backend not in ('sd-turbo', 'waypoint', 'krea'):
-            raise ValueError('Backend must be sd-turbo, waypoint, or krea')
+        if backend not in ('sd-turbo', 'waypoint', 'krea', 'ltx'):
+            raise ValueError('Backend must be sd-turbo, waypoint, krea, or ltx')
         if backend != 'sd-turbo' and tensorrt:
             raise ValueError('This backend uses its own runtime, not the SD-Turbo TensorRT engines')
         self.backend = backend
@@ -56,7 +56,12 @@ class BridgeSession:
         self.cloudflared = str(cloudflared or self.root / ('cloudflared.exe' if os.name == 'nt' else 'cloudflared'))
         self.access_token = access_token
         self.session_id = os.urandom(16).hex()
+        if backend == 'ltx':
+            from ltx_backend import SIZES
+            if tuple(output_size) not in SIZES:
+                raise ValueError('Choose an LTX startup resolution preset')
         self.output_size = ((1280, 720) if backend == 'waypoint' else (832, 480) if backend == 'krea'
+                            else tuple(output_size) if backend == 'ltx'
                             else resolution({'width': output_size[0], 'height': output_size[1]}))
         self.allow_tensorrt_resize = bool(allow_tensorrt_resize)
         self.engine_cache = Path(engine_cache or self.root / 'engines/torch-tensorrt').resolve()
@@ -163,7 +168,7 @@ class BridgeSession:
                 else:
                     environment[key] = value
             environment['BRIDGE_BACKEND'] = self.backend
-            if self.backend == 'krea':
+            if self.backend in ('krea', 'ltx'):
                 from krea_quant import configure_allocator
                 configure_allocator(environment)
                 # Read by Hub at import time in this child, before any downloads.

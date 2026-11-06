@@ -1,5 +1,5 @@
 ?
-pageindex 0 3
+pageindex 0 4
 Serverlocation 67108928 colab
 Serverurl 67108928 ""
 Accesstoken 67108928 ""
@@ -46,4 +46,6 @@ Worldseedinterval 67108928 5
 Worldseedinfo 67109184 "Prompt model: --"
 Kreapaused 67108928 off
 Kreainfo 67109184 "Waiting for Krea"
+Ltxpaused 67108928 off
+Ltxinfo 67109184 "Waiting for LTX"
 ?

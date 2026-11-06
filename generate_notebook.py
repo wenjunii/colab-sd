@@ -158,3 +158,5 @@ if __name__ == '__main__':
     print(('Verified ' if arguments.check else 'Generated ') + str(generate_waypoint(check=arguments.check)))
     from generate_krea_notebook import generate_notebook as generate_krea
     print(('Verified ' if arguments.check else 'Generated ') + str(generate_krea(check=arguments.check)))
+    from generate_ltx_notebook import generate_notebook as generate_ltx
+    print(('Verified ' if arguments.check else 'Generated ') + str(generate_ltx(check=arguments.check)))
