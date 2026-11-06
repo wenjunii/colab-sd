@@ -1,4 +1,4 @@
-"""Opt-in local LTX delivery/prompt probe against an already running server.
+"""Opt-in LTX delivery/prompt probe against an already running server.
 
 Disconnect TouchDesigner first (the server has one controller). This does not
 install packages, load another model, or start a listener. Output is retained.
@@ -14,7 +14,8 @@ async def probe(url, output, clips=6, timeout=1200):
     import cv2
     import numpy as np
     import websockets
-    report = {'url_kind': 'local WebSocket', 'clips_per_prompt': clips, 'segments': []}
+    report = {'url_kind': 'TLS tunnel' if url.startswith('wss://') else 'local WebSocket',
+              'clips_per_prompt': clips, 'segments': []}
     prompts = ('A cinematic close-up of a red toy car driving on a mountain road in daylight',
                'A wide shot of a white sailboat on a blue tropical ocean in daylight')
     async with websockets.connect(url, max_size=2**20, ping_interval=20, open_timeout=20) as ws:
@@ -91,13 +92,15 @@ async def probe(url, output, clips=6, timeout=1200):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--url', default='ws://127.0.0.1:8000/ws/stream',
+                        help='Default is localhost; pass the printed wss URL to measure tunnel delivery')
     parser.add_argument('--clips', type=int, choices=(3, 4, 6, 8), default=6)
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if (output / 'report.json').exists():
         parser.error('Choose a new output folder; an existing report is preserved')
-    asyncio.run(probe('ws://127.0.0.1:8000/ws/stream', output, args.clips))
+    asyncio.run(probe(args.url, output, args.clips))
 
 
 if __name__ == '__main__':
