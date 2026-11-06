@@ -25,6 +25,8 @@ OUTPUT_PRESETS = (
     ('576x1024', '576 x 1024 (9:16)', 576, 1024),
 )
 OUTPUT_RESOLUTIONS = tuple((width, height) for _, _, width, height in OUTPUT_PRESETS)
+LTX_OUTPUT_RESOLUTIONS = ((512, 512), (768, 512), (1024, 576), (1024, 768))
+LTX_FRAME_COUNTS = (17, 33, 65, 121)
 VIDEO_QUALITY_LIMITS = {'fast': 48000, 'balanced': 64000, 'detail': None}
 
 

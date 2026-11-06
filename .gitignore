@@ -16,6 +16,8 @@ captures/
 bridge_logs/
 .workstation/
 .workstation-waypoint/
+.workstation-krea/
+.workstation-ltx/
 **/access-token
 *.tmp
 

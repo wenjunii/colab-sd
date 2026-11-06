@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 
 
-async def probe(url, output, clips=6, timeout=1200):
+async def probe(url, output, clips=6, timeout=1200, access_token=None):
     import cv2
     import numpy as np
     import websockets
@@ -20,6 +20,13 @@ async def probe(url, output, clips=6, timeout=1200):
                'A wide shot of a white sailboat on a blue tropical ocean in daylight')
     async with websockets.connect(url, max_size=2**20, ping_interval=20, open_timeout=20) as ws:
         welcome = json.loads(await asyncio.wait_for(ws.recv(), 30))
+        if welcome.get('type') == 'auth_required':
+            if not access_token:
+                raise RuntimeError('This workstation requires --token-file pointing to its access-token file')
+            await ws.send(json.dumps({'type': 'auth', 'token': access_token}))
+            welcome = json.loads(await asyncio.wait_for(ws.recv(), 30))
+            if welcome.get('type') == 'error':
+                raise RuntimeError('Workstation authentication failed; check the token file')
         if welcome.get('backend') != 'ltx' or welcome.get('type') != 'welcome':
             raise RuntimeError('Expected an idle LTX server; disconnect its other controller first')
         size = (welcome['width'], welcome['height'])
@@ -95,12 +102,16 @@ def main():
     parser.add_argument('--url', default='ws://127.0.0.1:8000/ws/stream',
                         help='Default is localhost; pass the printed wss URL to measure tunnel delivery')
     parser.add_argument('--clips', type=int, choices=(3, 4, 6, 8), default=6)
+    parser.add_argument('--token-file', type=Path, help='Workstation access-token file; token is never printed')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if (output / 'report.json').exists():
         parser.error('Choose a new output folder; an existing report is preserved')
-    asyncio.run(probe(args.url, output, args.clips))
+    token = args.token_file.read_text(encoding='utf-8').strip() if args.token_file else None
+    if token is not None and len(token) < 32:
+        parser.error('Invalid workstation token file; expected at least 32 characters')
+    asyncio.run(probe(args.url, output, args.clips, access_token=token))
 
 
 if __name__ == '__main__':

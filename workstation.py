@@ -16,12 +16,16 @@ import venv
 
 from colab_launcher import BridgeSession, TUNNEL_PROTOCOLS
 from colab_setup import CORE_DEPENDENCIES, UPSTREAM_REVISION
-from bridge_protocol import OUTPUT_RESOLUTIONS
+from bridge_protocol import OUTPUT_RESOLUTIONS, LTX_OUTPUT_RESOLUTIONS, LTX_FRAME_COUNTS
 from waypoint_setup import PROMPT_SEED_MODELS
 
 PROJECT = Path(__file__).resolve().parent
 DEFAULT_RUNTIME = PROJECT / '.workstation'
 DEFAULT_WAYPOINT_RUNTIME = PROJECT / '.workstation-waypoint'
+DEFAULT_KREA_RUNTIME = PROJECT / '.workstation-krea'
+DEFAULT_LTX_RUNTIME = PROJECT / '.workstation-ltx'
+RUNTIMES = {'sd-turbo': DEFAULT_RUNTIME, 'waypoint': DEFAULT_WAYPOINT_RUNTIME,
+            'krea': DEFAULT_KREA_RUNTIME, 'ltx': DEFAULT_LTX_RUNTIME}
 TORCH_VERSION = '2.13.0'
 
 
@@ -46,6 +50,11 @@ def check_platform():
 
 
 def gpu_check(python, root, backend='sd-turbo'):
+    if backend in ('krea', 'ltx'):
+        preflight = ('from ltx_backend import gpu_preflight; print(gpu_preflight())' if backend == 'ltx' else
+                     'import torch; from krea_backend import gpu_preflight; print(gpu_preflight(torch))')
+        subprocess.run([str(python), '-c', preflight], cwd=PROJECT, check=True)
+        return
     capability = ('assert torch.cuda.get_device_capability()[0] >= 8, "Waypoint requires Ampere+ CUDA"; '
                   if backend == 'waypoint' else '')
     subprocess.run([str(python), '-c',
@@ -56,7 +65,7 @@ def gpu_check(python, root, backend='sd-turbo'):
                    cwd=root, check=True)
 
 
-def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION):
+def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION, model_cache=None):
     check_platform()
     if not re.fullmatch(r'cu\d{3}', cuda) or not re.fullmatch(r'\d+\.\d+\.\d+', torch_version):
         raise ValueError('Use a CUDA wheel tag such as cu130 and a Torch release such as 2.13.0.')
@@ -65,14 +74,23 @@ def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION):
     marker = runtime / 'workstation.json'
     if not marker.exists() and any(runtime.iterdir()):
         raise RuntimeError('Runtime folder is not empty or managed by this installer. Choose a new --runtime folder.')
+    previous = {}
     if not marker.exists():
         marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION}) + '\n', encoding='utf-8')
     else:
         configuration = json.loads(marker.read_text(encoding='utf-8'))
         if configuration.get('managed_by') != 'colab-sd' or configuration.get('backend', 'sd-turbo') != 'sd-turbo':
             raise RuntimeError('Runtime folder belongs to another application or backend; choose a separate --runtime.')
-    marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION, 'ready': False}) + '\n',
+        previous = configuration
+    selected = model_cache or previous.get('model_cache')
+    # Existing StreamDiffusion installs used the caller's Hub cache. Preserve
+    # that selection until an explicit override; do not redownload their models.
+    cache = Path(selected or runtime / 'models').expanduser().resolve() if selected or not previous else None
+    marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION, 'ready': False,
+                                 'model_cache': str(cache) if cache else None}) + '\n',
                       encoding='utf-8')
+    if cache:
+        waypoint_model_cache(runtime, cache)
     if shutil.which('git') is None:
         raise RuntimeError('Install Git and reopen your terminal before running workstation setup.')
     python = runtime_python(runtime)
@@ -99,7 +117,8 @@ def setup(runtime, cuda='cu130', torch_version=TORCH_VERSION):
                     'from utils.wrapper import StreamDiffusionWrapper',
                     str(PROJECT)], cwd=upstream, check=True)
     marker.write_text(json.dumps({'managed_by': 'colab-sd', 'revision': UPSTREAM_REVISION, 'ready': True,
-                                 'torch': torch_version, 'cuda': cuda}) + '\n', encoding='utf-8')
+                                 'torch': torch_version, 'cuda': cuda,
+                                 'model_cache': str(cache) if cache else None}) + '\n', encoding='utf-8')
     print('Workstation setup complete. Run workstation.py start to load the models and stream.')
 
 
@@ -172,6 +191,82 @@ def waypoint_environment(runtime, configuration, arguments):
             'TRITON_CACHE_DIR': str(runtime / 'triton-cache')}
 
 
+def modern_installer(backend):
+    if backend == 'ltx':
+        import ltx_setup
+        return ltx_setup
+    if backend == 'krea':
+        import krea_setup
+        return krea_setup
+    raise ValueError('Expected Krea or LTX backend')
+
+
+def modern_revisions(backend):
+    if backend == 'ltx':
+        from ltx_assets import CODE_REVISION, CODE_SHA256, MODEL_REVISION
+        return {'code': CODE_REVISION, 'code_sha256': CODE_SHA256, 'model': MODEL_REVISION}
+    from krea_assets import MODEL_REVISION, WAN_REVISION
+    return {'krea': MODEL_REVISION, 'wan': WAN_REVISION}
+
+
+def setup_modern(runtime, backend, model_cache=None):
+    """Use Colab's pinned installer, with backend-specific persistent storage."""
+    check_platform()
+    runtime = Path(runtime).resolve()
+    marker = runtime / 'workstation.json'
+    previous = {}
+    if marker.exists():
+        previous = json.loads(marker.read_text(encoding='utf-8'))
+        if previous.get('managed_by') != 'colab-sd' or previous.get('backend') != backend:
+            raise RuntimeError('Runtime folder belongs to another application or backend; choose a separate --runtime.')
+    elif runtime.exists() and any(runtime.iterdir()):
+        raise RuntimeError('Runtime folder is not empty or managed by this installer. Choose a new --runtime folder.')
+    installer = modern_installer(backend)
+    runtime.mkdir(parents=True, exist_ok=True)
+    cache = Path(model_cache or previous.get('model_cache') or runtime / 'models').expanduser().resolve()
+    configuration = {'managed_by': 'colab-sd', 'backend': backend, 'ready': False,
+                     'revisions': modern_revisions(backend), 'installation': installer.installation_signature(),
+                     'model_cache': str(cache)}
+    marker.write_text(json.dumps(configuration, indent=2) + '\n', encoding='utf-8')
+    waypoint_model_cache(runtime, cache)
+    installer.setup(runtime, install_tunnel=False, project_dir=PROJECT, check_port=False)
+    configuration['ready'] = True
+    marker.write_text(json.dumps(configuration, indent=2) + '\n', encoding='utf-8')
+    print(f'{backend} workstation setup complete. Models download on first start. Cache:', cache)
+
+
+def cache_environment(runtime, selected, legacy=False):
+    cache = waypoint_model_cache(runtime, selected)
+    return {'HF_HUB_CACHE': str(cache), 'HUGGINGFACE_HUB_CACHE': str(cache),
+            'TRANSFORMERS_CACHE': str(cache) if legacy else None,
+            'TORCHINDUCTOR_CACHE_DIR': str(runtime / 'inductor-cache')}
+
+
+def modern_environment(runtime, configuration, arguments):
+    backend = arguments.backend
+    installer = modern_installer(backend)
+    expected = installer.installation_signature()
+    installed = runtime / 'installed.json'
+    if (configuration.get('revisions') != modern_revisions(backend)
+            or configuration.get('installation') != expected or not installed.is_file()
+            or json.loads(installed.read_text(encoding='utf-8')) != expected):
+        raise RuntimeError(f'{backend} setup is outdated. Run workstation.py setup --backend {backend} again.')
+    environment = cache_environment(runtime, arguments.model_cache or configuration.get('model_cache'))
+    if backend == 'krea':
+        environment.update(KREA_INT8_PROFILE=arguments.int8_profile or 'fast',
+            KREA_CLIP_BLOCKS=str(arguments.clip_blocks if arguments.clip_blocks is not None else 64),
+            HF_MODULES_CACHE=str(runtime / 'modules-cache'),
+            DIFFUSERS_ENABLE_HUB_KERNELS='0', DISABLE_SAGEATTENTION='1')
+    else:
+        image = str(arguments.input_image.expanduser().resolve(strict=True)) if arguments.input_image else ''
+        environment.update(LTX_CLIP_FRAMES=str(arguments.clip_frames or 33), LTX_INPUT_IMAGE=image,
+            LTX_PERFORMANCE_PROFILE=arguments.performance_profile or 'resident',
+            LTX_CONTINUOUS='0' if arguments.continuous is False else '1',
+            LTX_CONTINUE_SCENE='0' if arguments.continue_scene is False else '1',
+            LTX_REFRESH_EVERY=str(arguments.refresh_every if arguments.refresh_every is not None else 4))
+    return environment
+
+
 def pairing_token(runtime):
     path = Path(runtime) / 'access-token'
     if not path.exists():
@@ -207,19 +302,36 @@ def cloudflared_binary(runtime):
 def start(arguments):
     runtime = arguments.runtime.resolve()
     backend = arguments.backend
-    if backend == 'waypoint':
+    if backend != 'sd-turbo':
         if arguments.model is not None:
             raise ValueError('--model applies only to the StreamDiffusion backend.')
         if (arguments.tensorrt or arguments.allow_tensorrt_resize or arguments.engine_cache
                 or arguments.no_engine_cache):
-            raise ValueError('Waypoint uses INT8/BF16 and TorchInductor; TensorRT options apply only to SD-Turbo.')
+            raise ValueError('TensorRT options apply only to the StreamDiffusion backend.')
+    if backend == 'waypoint':
         if arguments.resolution not in (None, '1280x720'):
             raise ValueError('Waypoint uses fixed native 1280x720 output.')
-    elif (arguments.quantization or arguments.compile_profile or arguments.model_cache
-          or arguments.prompt_seed_model or arguments.resolution == '1280x720'):
+    elif arguments.quantization or arguments.compile_profile or arguments.prompt_seed_model:
         raise ValueError('Waypoint options require --backend waypoint.')
+    if backend != 'krea' and (arguments.int8_profile is not None or arguments.clip_blocks is not None):
+        raise ValueError('Krea options require --backend krea.')
+    if backend != 'ltx' and any(getattr(arguments, name) is not None for name in (
+            'clip_frames', 'performance_profile', 'continuous', 'continue_scene', 'refresh_every', 'input_image')):
+        raise ValueError('LTX options require --backend ltx.')
+    if backend == 'krea' and arguments.clip_blocks is not None and not 1 <= arguments.clip_blocks <= 64:
+        raise ValueError('Krea --clip-blocks must be 1 to 64.')
+    if backend == 'ltx' and arguments.refresh_every is not None and not 0 <= arguments.refresh_every <= 32:
+        raise ValueError('LTX --refresh-every must be 0 to 32.')
+    defaults = {'sd-turbo': (512, 512), 'waypoint': (1280, 720), 'krea': (832, 480), 'ltx': (1024, 576)}
+    output = tuple(map(int, arguments.resolution.split('x'))) if arguments.resolution else defaults[backend]
+    allowed = {'sd-turbo': OUTPUT_RESOLUTIONS, 'waypoint': ((1280, 720),),
+               'krea': ((832, 480),), 'ltx': LTX_OUTPUT_RESOLUTIONS}
+    if output not in allowed[backend]:
+        raise ValueError(f'Choose a supported startup resolution for {backend}.')
+    if arguments.input_image and not arguments.input_image.expanduser().is_file():
+        raise ValueError('LTX --input-image must be an existing image file.')
     python = runtime_python(runtime)
-    upstream = runtime if backend == 'waypoint' else runtime / 'StreamDiffusion'
+    upstream = runtime / 'StreamDiffusion' if backend == 'sd-turbo' else runtime
     marker = runtime / 'workstation.json'
     if (not marker.exists() or not python.exists()
             or (backend == 'sd-turbo' and not (upstream / 'utils/wrapper.py').exists())):
@@ -230,10 +342,13 @@ def start(arguments):
         raise RuntimeError('Workstation setup is outdated or unmanaged. Run workstation.py setup again.')
     if backend == 'waypoint':
         environment = waypoint_environment(runtime, configuration, arguments)
+    elif backend in ('krea', 'ltx'):
+        environment = modern_environment(runtime, configuration, arguments)
     else:
         if configuration.get('revision') != UPSTREAM_REVISION:
             raise RuntimeError('Workstation setup is outdated. Run workstation.py setup again.')
-        environment = {}
+        selected = arguments.model_cache or configuration.get('model_cache')
+        environment = cache_environment(runtime, selected, legacy=True) if selected else {}
     gpu_check(python, upstream, backend=backend)
     token = pairing_token(runtime)
     tunnel = arguments.transport == 'cloudflare'
@@ -244,8 +359,7 @@ def start(arguments):
                             advertise_host=arguments.advertise_host or socket.gethostname(),
                             server_script=PROJECT / 'colab_server.py', python_executable=python,
                             cloudflared=binary, access_token=token, startup_timeout=arguments.startup_timeout,
-                            output_size=(1280, 720) if backend == 'waypoint' else
-                                        tuple(map(int, (arguments.resolution or '512x512').split('x'))),
+                            output_size=output,
                             allow_tensorrt_resize=arguments.allow_tensorrt_resize,
                             engine_cache=arguments.engine_cache, reuse_engines=not arguments.no_engine_cache,
                             tunnel_protocol=arguments.tunnel_protocol, backend=backend, server_environment=environment,
@@ -262,6 +376,13 @@ def start(arguments):
             print('Prompt seeds:', environment['WAYPOINT_PROMPT_SEED_MODEL'] if configuration['prompt_seeds'] else 'disabled',
                   '| Model cache:', environment['HF_HUB_CACHE'])
             print('Native 1280 x 720 |', environment['WAYPOINT_QUANT'], '| Compiler:', environment['WAYPOINT_COMPILE_PROFILE'])
+        elif backend == 'krea':
+            print('Krea page: Pause / Reset. Native 832 x 480 | INT8:', environment['KREA_INT8_PROFILE'],
+                  '| Clip blocks:', environment['KREA_CLIP_BLOCKS'])
+        elif backend == 'ltx':
+            print('LTX page: Generate or Restart. Steady playback buffers two clips, then renders ahead.')
+            print('Scene refresh can cause cuts. New prompts still load weights. Native',
+                  f'{output[0]} x {output[1]} |', environment['LTX_PERFORMANCE_PROFILE'])
         print('Ctrl+C stops this server and its tunnel. Logs:', upstream / 'bridge_logs', flush=True)
         session.wait()
     finally:
@@ -271,17 +392,17 @@ def start(arguments):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    install = commands.add_parser('setup', help='Install a separate SD-Turbo or Waypoint CUDA runtime')
-    install.add_argument('--backend', choices=('sd-turbo', 'waypoint'), default='sd-turbo')
-    install.add_argument('--runtime', type=Path, help='Default: .workstation for SD-Turbo; .workstation-waypoint for Waypoint')
+    install = commands.add_parser('setup', help='Install a separate CUDA runtime for the selected backend')
+    install.add_argument('--backend', choices=tuple(RUNTIMES), default='sd-turbo')
+    install.add_argument('--runtime', type=Path, help='Default: .workstation or .workstation-BACKEND')
     install.add_argument('--cuda', help='SD-Turbo CUDA wheel tag (default: cu130); Waypoint pins cu130')
     install.add_argument('--torch-version', help=f'SD-Turbo Torch version (default: {TORCH_VERSION}); Waypoint pins 2.11.0')
     install.add_argument('--prompt-seeds', action='store_true', help='Waypoint: install and enable optional Turbo prompt seeds')
     install.add_argument('--prompt-seed-model', choices=PROMPT_SEED_MODELS,
                          help='Waypoint seed generator (default: sd-turbo); requires --prompt-seeds')
-    install.add_argument('--model-cache', type=Path, help='Waypoint model cache (default: runtime/models); auth stays outside')
+    install.add_argument('--model-cache', type=Path, help='Persistent model cache (default: runtime/models); auth stays outside')
     launch = commands.add_parser('start', help='Run generation with LAN/VPN or Cloudflare transport')
-    launch.add_argument('--backend', choices=('sd-turbo', 'waypoint'), default='sd-turbo')
+    launch.add_argument('--backend', choices=tuple(RUNTIMES), default='sd-turbo')
     launch.add_argument('--model', choices=('sd-turbo', 'sdxl-turbo'),
                         help='StreamDiffusion model (default: sd-turbo); selection applies at startup')
     launch.add_argument('--prompt-seed-model', choices=PROMPT_SEED_MODELS,
@@ -289,23 +410,33 @@ def main(argv=None):
     launch.add_argument('--runtime', type=Path, help='Use the matching setup runtime folder')
     launch.add_argument('--quantization', choices=('intw8a8', 'bf16'), help='Waypoint only (default: intw8a8)')
     launch.add_argument('--compile-profile', choices=('fast', 'max-autotune'), help='Waypoint only (default: fast)')
-    launch.add_argument('--model-cache', type=Path, help='Waypoint cache override for this launch')
+    launch.add_argument('--model-cache', type=Path, help='Model cache override for this launch, for any backend')
+    launch.add_argument('--int8-profile', choices=('fast', 'balanced'), help='Krea only (default: fast)')
+    launch.add_argument('--clip-blocks', type=int, help='Krea only, 1-64 (default: 64)')
+    launch.add_argument('--clip-frames', type=int, choices=LTX_FRAME_COUNTS, help='LTX only (default: 33)')
+    launch.add_argument('--performance-profile', choices=('resident', 'low_memory'), help='LTX only (default: resident)')
+    launch.add_argument('--continuous', action=argparse.BooleanOptionalAction, default=None,
+                        help='LTX automatic generation after Generate (default: enabled)')
+    launch.add_argument('--continue-scene', action=argparse.BooleanOptionalAction, default=None,
+                        help='LTX condition on previous ending frame (default: enabled)')
+    launch.add_argument('--refresh-every', type=int, help='LTX scene refresh interval, 0-32 clips (default: 4; 0 disables)')
+    launch.add_argument('--input-image', type=Path, help='LTX startup image; empty uses Prompt A text-to-video')
     launch.add_argument('--transport', choices=('lan', 'cloudflare'), default='lan')
     launch.add_argument('--tunnel-protocol', choices=TUNNEL_PROTOCOLS, default='http2',
                         help='Cloudflare transport (default: http2, matching Colab); compare auto/quic for your route')
     launch.add_argument('--bind', help='Listening address (default: all interfaces for LAN, loopback for Cloudflare)')
     launch.add_argument('--port', type=int, default=8000)
     launch.add_argument('--advertise-host', help='Workstation LAN/VPN IP or DNS name shown in the client URL')
-    launch.add_argument('--max-fps', type=float, help='Default: 60 for SD-Turbo; 20 for Waypoint')
+    launch.add_argument('--max-fps', type=float, help='Default: SD-Turbo 60; Waypoint 20; Krea/LTX 24')
     launch.add_argument('--tensorrt', action='store_true', help='Compile both UNets; workstation GPU validation required')
-    launch.add_argument('--resolution', choices=[*[f'{w}x{h}' for w, h in OUTPUT_RESOLUTIONS], '1280x720'],
-                        help='Default: 512x512 for SD-Turbo; fixed 1280x720 for Waypoint')
+    launch.add_argument('--resolution', choices=[*[f'{w}x{h}' for w, h in OUTPUT_RESOLUTIONS], '1280x720', '832x480', '768x512'],
+                        help='Startup size; default SD 512x512, World 1280x720, Krea 832x480, LTX 1024x576')
     launch.add_argument('--allow-tensorrt-resize', action='store_true', help='Allow live profile loads/builds; streaming pauses')
     launch.add_argument('--engine-cache', type=Path, help='Persistent full-engine profile cache directory')
     launch.add_argument('--no-engine-cache', action='store_true', help='Rebuild immutable engines instead of reusing archives')
     launch.add_argument('--startup-timeout', type=float, default=None)
     arguments = parser.parse_args(argv)
-    arguments.runtime = arguments.runtime or (DEFAULT_WAYPOINT_RUNTIME if arguments.backend == 'waypoint' else DEFAULT_RUNTIME)
+    arguments.runtime = arguments.runtime or RUNTIMES[arguments.backend]
     try:
         if arguments.command == 'setup':
             if arguments.backend == 'waypoint':
@@ -315,15 +446,23 @@ def main(argv=None):
                     raise ValueError('The pinned Waypoint runtime requires Torch 2.11.0 / cu130; SD-Turbo uses a separate environment.')
                 setup_waypoint(arguments.runtime, arguments.prompt_seeds, arguments.model_cache,
                                prompt_seed_model=arguments.prompt_seed_model or 'sd-turbo')
+            elif arguments.backend in ('krea', 'ltx'):
+                if arguments.prompt_seeds or arguments.prompt_seed_model:
+                    raise ValueError('Prompt seed setup options require --backend waypoint.')
+                pinned_torch = '2.11.0' if arguments.backend == 'ltx' else '2.13.0'
+                if arguments.cuda not in (None, 'cu130') or arguments.torch_version not in (None, pinned_torch):
+                    raise ValueError(f'{arguments.backend} requires pinned Torch {pinned_torch} / cu130.')
+                setup_modern(arguments.runtime, arguments.backend, arguments.model_cache)
             else:
-                if arguments.prompt_seeds or arguments.model_cache or arguments.prompt_seed_model:
-                    raise ValueError('Prompt seed and model-cache setup options require --backend waypoint.')
-                setup(arguments.runtime, arguments.cuda or 'cu130', arguments.torch_version or TORCH_VERSION)
+                if arguments.prompt_seeds or arguments.prompt_seed_model:
+                    raise ValueError('Prompt seed setup options require --backend waypoint.')
+                options = {'model_cache': arguments.model_cache} if arguments.model_cache else {}
+                setup(arguments.runtime, arguments.cuda or 'cu130', arguments.torch_version or TORCH_VERSION, **options)
         else:
             if arguments.max_fps is None:
-                arguments.max_fps = 20 if arguments.backend == 'waypoint' else 60
-            if arguments.startup_timeout is None and arguments.backend == 'waypoint':
-                arguments.startup_timeout = 1800
+                arguments.max_fps = {'sd-turbo': 60, 'waypoint': 20, 'krea': 24, 'ltx': 24}[arguments.backend]
+            if arguments.startup_timeout is None and arguments.backend != 'sd-turbo':
+                arguments.startup_timeout = 3600 if arguments.backend == 'ltx' else 1800
             start(arguments)
         return 0
     except KeyboardInterrupt:

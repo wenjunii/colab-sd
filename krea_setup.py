@@ -1,4 +1,4 @@
-"""Separate Linux/Colab environment for the Apache-declared Krea HF runtime."""
+"""Separate Windows/Linux environment for the Apache-declared Krea HF runtime."""
 import json
 import os
 from pathlib import Path
@@ -31,15 +31,20 @@ def require_unused_port(port=8000):
                        'the existing server was left running.')
 
 
-def setup(root):
-    if platform.system() != 'Linux' or platform.machine().lower() not in ('x86_64', 'amd64'):
-        raise RuntimeError('This Krea installer targets x86-64 Linux/Colab only')
-    require_unused_port()
+def installation_signature():
+    return {'python': list(sys.version_info[:2]), 'torch': TORCH, 'index': TORCH_INDEX,
+            'dependencies': list(DEPENDENCIES)}
+
+
+def setup(root, install_tunnel=True, project_dir=None, check_port=True):
+    if platform.system() not in ('Linux', 'Windows') or platform.machine().lower() not in ('x86_64', 'amd64'):
+        raise RuntimeError('This Krea installer supports x86-64 Linux and Windows CUDA hosts')
+    if check_port:
+        require_unused_port()
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     python, repaired = ensure_environment(root / 'venv', label='Krea')
-    signature = {'python': list(sys.version_info[:2]), 'torch': TORCH, 'index': TORCH_INDEX,
-                 'dependencies': list(DEPENDENCIES)}
+    signature = installation_signature()
     marker = root / 'installed.json'
     reusable = not repaired and marker.is_file() and json.loads(marker.read_text()) == signature
     pip_env = {key: value for key, value in os.environ.items() if not key.startswith('PIP_')}
@@ -55,14 +60,16 @@ def setup(root):
     subprocess.run([str(python), '-c',
                     'import torch; from diffusers import ModularPipeline, BitsAndBytesConfig; '
                     'import bitsandbytes; from krea_backend import gpu_preflight; '
-                    'print(gpu_preflight(torch), flush=True)'], cwd=root, check=True)
+                    'print(gpu_preflight(torch), flush=True)'], cwd=project_dir or root, env=pip_env, check=True)
     marker.write_text(json.dumps(signature, indent=2) + '\n')
-    binary = root / 'cloudflared'
+    if not install_tunnel:
+        return python, None
+    binary = root / ('cloudflared.exe' if platform.system() == 'Windows' else 'cloudflared')
     if not binary.exists():
         partial = root / 'cloudflared.download'
         try:
-            urllib.request.urlretrieve(
-                'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64', partial)
+            asset = 'cloudflared-windows-amd64.exe' if platform.system() == 'Windows' else 'cloudflared-linux-amd64'
+            urllib.request.urlretrieve('https://github.com/cloudflare/cloudflared/releases/latest/download/' + asset, partial)
             partial.replace(binary)
         finally:
             partial.unlink(missing_ok=True)
