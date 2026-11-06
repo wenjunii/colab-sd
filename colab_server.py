@@ -121,7 +121,7 @@ stream_txt2img = None
 stream_img2img = None
 pipeline_ready = False
 # The two modes share model weights and mutable state. Keep all GPU work on
-# one worker, including control updates, without blocking WebSocket handling.
+# one worker without blocking WebSocket handling. LTX CPU-only controls use revisions.
 model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diffusion")
 try:
     max_stream_fps = float(os.environ.get("MAX_STREAM_FPS", "60"))
@@ -407,7 +407,7 @@ def process_frame(mode, frame_bytes=None, max_frame_bytes=None):
 
 
 def apply_controls(data):
-    """Apply an entire update between inference calls on the same worker."""
+    """Apply model controls; LTX only updates revisioned CPU state here."""
     global current_mode, current_seed, output_width, output_height, last_pipeline_error, pipeline_ready
     global pipeline_revision, current_prompt_a
     if is_ltx_backend:

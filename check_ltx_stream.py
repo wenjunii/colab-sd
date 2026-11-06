@@ -40,7 +40,7 @@ async def probe(url, output, clips=6, timeout=1200):
                     raise TimeoutError('LTX stream probe exceeded its bounded segment deadline')
                 if isinstance(raw, str):
                     data = json.loads(raw)
-                    if data.get('type') == 'error':
+                    if data.get('type') == 'error' or data.get('world_phase') == 'error':
                         raise RuntimeError(data.get('status', 'Server rejected probe controls'))
                     if data.get('type') == 'configured':
                         configured = True

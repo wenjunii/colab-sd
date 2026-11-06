@@ -1140,7 +1140,7 @@ pages 4 StreamDiffusion World Krea LTX
 772804868 Ltxspeed "LTX Generation Speed" 1 1 0 0 1 1 1 2 0 "" "" LTX 4
 772804868 Ltxinfo "LTX Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" LTX 5
 772804868 Ltxplayback "Steady Playback" 1 1 0 0 1 1 1 2 0 "" "" LTX 6
-772804866 Ltxrefresh "Refresh Scene Every N Clips (0=Off, max 32)" 1 1 0 0 1 1 1 2 0 "" "" LTX 7
+772804866 Ltxrefresh "Scene Refresh (0=Off)" 1 1 0 0 1 1 1 2 0 "" "" LTX 7
 ?
 '''
 
