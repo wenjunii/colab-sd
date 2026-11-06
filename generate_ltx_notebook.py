@@ -6,7 +6,7 @@ from generate_notebook import PROJECT_DIR, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'tensorrt_backend.py',
            'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_quant.py', 'krea_weights.py',
-           'ltx_assets.py', 'ltx_setup.py', 'ltx_runtime.py', 'ltx_backend.py', 'check_ltx_gpu.py')
+           'ltx_assets.py', 'ltx_setup.py', 'ltx_runtime.py', 'ltx_backend.py', 'check_ltx_gpu.py', 'check_ltx_stream.py')
 
 
 def make_notebook(project_dir=PROJECT_DIR):
@@ -37,8 +37,10 @@ apply independently of the bridge's MIT and runtime's Apache licenses.
    and Seed, then pulse **Generate or Restart** on the **LTX** page. With **Continuous
    Generation** On, new clips render automatically with advancing seeds. **Continue
    Scene from Last Frame** conditions each next clip on the previous ending image.
-   Turn it Off for independent clips. The last frame stays visible while rendering;
-   completed clips are never replayed. Pause stops after current GPU work finishes.
+   Turn it Off for independent clips. Continuous playback first buffers two clips,
+   measures warm rendering speed, and then plays at a sustainable, slower rate while
+   the GPU renders one clip ahead. No old clips are replayed. Pause gates delivery
+   immediately and stops scheduling after current GPU work finishes.
    Another Generate pulse restarts from Prompt A / Seed and the startup image.
 
 This uses the official distilled **two-stage** pipeline, FP8-cast transformer storage,
@@ -53,14 +55,23 @@ kernel build, prompt enhancer or quality-detailing LoRA is installed. Upstream a
 generates audio internally; this trial transmits video only. Prompt B/blend, negative
 prompts, denoise strength, live TOP input and World/Krea controls do not steer this mode.
 
-Generation happens before playback. GPU Inference is **whole-clip time**; video playback
-at 24 FPS is not proof of 24 generated FPS. The log reports generated frames/elapsed time.
-First Generate and a changed prompt also load model weights lazily. The LTX page's
-**Generation Speed** is the actual new frames generated per second. Progress/pings remain responsive while
-the single worker is busy. At most one bounded CPU clip (17–121 frames) plus ACK-limited
-delivery credits is queued. Errors stop automatic retries; inspect logs before retrying.
-Continuous mode creates new clips back to back; it does not guarantee real-time FPS
-or seamless scene boundaries. Lower-memory profile and longer clips need separate measurements.
+GPU Inference is **whole-clip time**. Generation Speed is actual new FPS; **Steady
+Playback** reports the slower delivery rate. Continuous playback uses the slowest
+of the last four warm renders with a 20% time allowance, capped at 24 FPS. First
+Generate and a changed prompt still load weights lazily, then prepare a warm lookahead.
+Prompt/seed edits immediately invalidate queued and in-flight old results and reset
+scene continuation; another Generate pulse is not needed once rendering is armed.
+The last frame stays visible during startup, prompt reloading or a buffer underrun.
+GPU render, CPU delivery and controls overlap; GPU calls remain serialized. At most
+two CPU clips (17–121 frames each) plus ACK-limited delivery credits are queued.
+Errors stop automatic retries. Network stalls or unexpectedly slow renders can still
+cause gaps; this is slower motion, not 24 newly generated FPS or guaranteed seamless motion.
+
+Continuation PNGs use `crf=0` to skip the runtime's lossy H.264 input re-compression.
+VAE feedback and generative drift can still accumulate. **REFRESH_SCENE_EVERY = 4**
+returns to Prompt A / the startup image after every four clips, breaking that chain.
+It may create a scene cut. Change **Refresh Scene Every N Clips** live in TD, or set
+0 to disable periodic refresh. Prompt edits always reset the old scene immediately.
 
 For opt-in GPU validation, stop Step 3 and run the existing isolated Python:
 `python check_ltx_gpu.py --output captures/ltx-validation --frames 17`.
@@ -129,6 +140,7 @@ Keep the Colab launch cell and TouchDesigner running for playback.
         PERFORMANCE_PROFILE = "resident" # @param ["resident", "low_memory"]
         CONTINUOUS_GENERATION = True # @param {type:"boolean"}
         CONTINUE_SCENE = True # @param {type:"boolean"}
+        REFRESH_SCENE_EVERY = 4 # @param [0, 2, 4, 8, 16, 32] {type:"raw"}
         INPUT_IMAGE = "" # @param {type:"string"}
         TUNNEL_PROTOCOL = "http2" # @param ["http2", "auto", "quic"]
         if 'ltx_session' in globals():
@@ -142,13 +154,15 @@ Keep the Colab launch cell and TouchDesigner running for playback.
             server_environment={'LTX_CLIP_FRAMES':str(CLIP_FRAMES),'LTX_INPUT_IMAGE':INPUT_IMAGE,
                 'LTX_PERFORMANCE_PROFILE':PERFORMANCE_PROFILE,
                 'LTX_CONTINUOUS':'1' if CONTINUOUS_GENERATION else '0',
-                'LTX_CONTINUE_SCENE':'1' if CONTINUE_SCENE else '0'})
+                'LTX_CONTINUE_SCENE':'1' if CONTINUE_SCENE else '0',
+                'LTX_REFRESH_EVERY':str(REFRESH_SCENE_EVERY)})
         try:
             url=ltx_session.start()
             print('Paste this URL into the updated TouchDesigner component:')
             print(url,flush=True)
             print('Use Prompt A / Seed, then LTX page / Generate or Restart. Continuous mode advances seeds automatically.')
-            print('The last frame stays visible while the next clip renders. First use or a changed prompt loads weights.')
+            print('Continuous playback buffers two clips, then paces delivery to warm rendering speed while rendering ahead.')
+            print('First use or a changed prompt holds the last frame while loading. Periodic scene refresh can cause cuts.')
             ltx_session.wait()
         except KeyboardInterrupt:
             print('Stopping this LTX session...')

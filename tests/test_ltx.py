@@ -2,6 +2,7 @@
 import ast
 import asyncio
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
@@ -89,7 +90,7 @@ class LTXChecks(unittest.TestCase):
             pixels[..., 0] = 255
             backend.pipe.side_effect = lambda **_: SimpleNamespace(video=iter([pixels]))
             backend.image, backend.workspace = original, root
-            backend.image_factory = Mock(side_effect=lambda path, *_: path)
+            backend.image_factory = Mock(side_effect=lambda path, *_, **__: path)
             backend.configure({'prompt_a': 'forest', 'ltx_continuous': True,
                                'ltx_continue_scene': True, 'ltx_generate': True})
             for _ in range(17):
@@ -101,9 +102,83 @@ class LTXChecks(unittest.TestCase):
             import cv2
             self.assertEqual(tuple(cv2.imread(str(carry))[0, 0]), (0, 0, 255))
             self.assertEqual(backend.pipe.call_args.kwargs['images'], [str(carry)])
+            self.assertEqual(backend.image_factory.call_args.kwargs, {'crf': 0})
             backend.release_controls()
             self.assertFalse(carry.exists())
             self.assertEqual(original.read_text(), 'user input fixture')
+
+    def test_lookahead_is_bounded_and_playback_uses_warm_not_cold_timing(self):
+        backend = fake_backend()
+        backend.configure({'prompt_a': 'forest', 'ltx_continuous': True, 'ltx_generate': True})
+        with patch('ltx_backend.time.perf_counter', side_effect=[0., 100., 100., 102.]):
+            backend.render_next_clip()
+            self.assertFalse(backend.can_deliver)
+            self.assertEqual(backend.progress()['world_phase'], 'buffering')
+            backend.render_next_clip()
+        self.assertTrue(backend.can_deliver)
+        self.assertEqual(backend.progress()['ltx_queued_frames'], 34)
+        self.assertAlmostEqual(backend.playback_fps, 17 / 2.4)
+        self.assertFalse(backend.needs_render)
+        self.assertFalse(backend.render_next_clip())
+        for _ in range(17):
+            self.assertIsNotNone(backend.pop_frame())
+        self.assertEqual(len(backend.frames), 17)
+        self.assertTrue(backend.needs_render)
+        backend.configure({'ltx_continuous': False})
+        for _ in range(17):
+            self.assertIsNotNone(backend.pop_frame())
+        self.assertFalse(backend.needs_render)
+        backend.release_controls()
+
+    def test_prompt_edit_discards_inflight_old_scene_and_does_not_require_another_pulse(self):
+        backend = fake_backend()
+        entered, resume = threading.Event(), threading.Event()
+        original = backend.pipe.side_effect
+        def render(**kwargs):
+            entered.set()
+            if not resume.wait(5):
+                raise RuntimeError('test gate timed out')
+            return original(**kwargs)
+        backend.pipe.side_effect = render
+        backend.configure({'prompt_a': 'forest', 'ltx_generate': True})
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            pending = worker.submit(backend.render_next_clip)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(backend.configure({'prompt_a': 'city'}))
+                self.assertTrue(backend.progress()['ltx_prompt_pending'])
+                resume.set()
+                self.assertFalse(pending.result(timeout=2))
+            finally:
+                resume.set()
+        self.assertEqual(len(backend.frames), 0)
+        self.assertIsNone(backend._last_rgb)
+        self.assertTrue(backend.needs_render)
+        backend.next_frame()
+        self.assertEqual(backend.pipe.call_args.kwargs['prompt'], 'city')
+        self.assertEqual(backend.pipe.call_args.kwargs['images'], [])
+        self.assertFalse(backend.progress()['ltx_prompt_pending'])
+        backend.release_controls()
+
+    def test_quality_refresh_breaks_recursive_feedback_without_dropping_seed_or_prompt(self):
+        with tempfile.TemporaryDirectory(prefix='colab-sd-ltx-refresh-') as directory:
+            backend = fake_backend()
+            backend.workspace = Path(directory)
+            backend.image_factory = Mock(side_effect=lambda path, *_, **__: path)
+            backend.configure({'prompt_a': 'forest', 'ltx_continuous': True,
+                               'ltx_continue_scene': True, 'ltx_refresh_every': 2, 'ltx_generate': True})
+            try:
+                for _ in range(17 * 3):
+                    backend.next_frame()
+                calls = [c.kwargs for c in backend.pipe.call_args_list]
+                self.assertEqual([c['seed'] for c in calls], [42, 43, 44])
+                self.assertEqual([c['prompt'] for c in calls], ['forest'] * 3)
+                self.assertEqual(calls[0]['images'], [])
+                self.assertEqual(len(calls[1]['images']), 1)
+                self.assertEqual(calls[2]['images'], [])
+                self.assertTrue(backend.progress()['ltx_quality_refresh'])
+            finally:
+                backend.release_controls()
 
     def test_failed_continuous_clip_never_retries_without_generate(self):
         backend = fake_backend()
@@ -194,7 +269,8 @@ class LTXChecks(unittest.TestCase):
     def test_control_validation_rejects_bad_patches_and_resolution_changes(self):
         for value in (None, [], {'mode': 'krea'}, {'seed': -1}, {'seed': True},
                       {'width': 768}, {'prompt_a': ''}, {'ltx_generate': 1}, {'ltx_paused': 'true'},
-                      {'ltx_continuous': 1}, {'ltx_continue_scene': 'true'}):
+                      {'ltx_continuous': 1}, {'ltx_continue_scene': 'true'},
+                      {'ltx_refresh_every': True}, {'ltx_refresh_every': -1}, {'ltx_refresh_every': 33}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_ltx_controls(value, (512, 512))
         self.assertEqual(validate_ltx_controls({'prompt_a': ' forest ', 'seed': 42,
@@ -302,7 +378,7 @@ class LTXChecks(unittest.TestCase):
         self.assertEqual(pars.Mode.val, 'ltx')
         namespace['send_control'](ltx_generate=True)
         self.assertEqual(set(messages[-1]), {'type', 'mode', 'width', 'height', 'prompt_a', 'seed',
-            'ltx_paused', 'ltx_generate', 'ltx_continuous', 'ltx_continue_scene'})
+            'ltx_paused', 'ltx_generate', 'ltx_continuous', 'ltx_continue_scene', 'ltx_refresh_every'})
         self.assertTrue(messages[-1]['ltx_continuous'])
         self.assertTrue(messages[-1]['ltx_continue_scene'])
         self.assertTrue(messages[-1]['ltx_generate'])
@@ -337,16 +413,17 @@ class LTXChecks(unittest.TestCase):
 
 
 class LTXTransportChecks(unittest.IsolatedAsyncioTestCase):
-    async def test_continuous_delivery_holds_last_frame_during_render_and_keeps_pings_responsive(self):
+    async def test_delivery_overlaps_render_and_prompt_edits_do_not_wait_for_gpu(self):
         backend, ws = fake_backend(), FakeWebSocket()
         entered, resume = threading.Event(), threading.Event()
 
         def render(**kwargs):
-            if kwargs['seed'] == 43:
+            if kwargs['seed'] == 44:
                 entered.set()
                 if not resume.wait(10):
                     raise RuntimeError('test render gate timed out')
-            return SimpleNamespace(video=iter([np.zeros((17, 512, 512, 3), dtype=np.uint8)]))
+            pixels = np.full((17, 512, 512, 3), 255 if kwargs['prompt'] == 'a red car' else 0, dtype=np.uint8)
+            return SimpleNamespace(video=iter([pixels]))
 
         backend.pipe.side_effect = render
         with patch.multiple(server, is_world_backend=False, is_krea_backend=False, is_ltx_backend=True,
@@ -365,14 +442,26 @@ class LTXTransportChecks(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(ws.binary), count)
                     await send({'type': 'frame_ack', 'frame_id': ws.binary[-1][0]})
                 await until(entered.is_set)
+                # Clip 3 is blocked, but clip 2 still delivers from the CPU queue.
+                await until(lambda: len(ws.binary) >= 18)
                 await send({'type': 'ping', 'sent_at': 123})
                 await until(lambda: any(x.get('type') == 'pong' and x.get('sent_at') == 123 for x in ws.text))
-                self.assertEqual(len(ws.binary), 17)  # no replay while the next render is busy
+                await send({'type': 'control', 'prompt_a': 'a red car', 'ltx_paused': True})
+                await until(lambda: backend.prompt == 'a red car' and backend.paused)
+                self.assertFalse(resume.is_set())
+                self.assertEqual(backend.progress()['ltx_queued_frames'], 0)
+                self.assertIsNone(backend._last_rgb)
                 await send({'type': 'control', 'ltx_paused': True})
                 resume.set()
                 await until(lambda: backend.paused)
-                self.assertEqual(backend.pipe.call_count, 2)
-                self.assertEqual(backend.last_seed, 43)
+                self.assertEqual(backend.pipe.call_count, 3)
+                await send({'type': 'frame_ack', 'frame_id': ws.binary[-1][0]})
+                await send({'type': 'control', 'ltx_paused': False})
+                await until(lambda: len(ws.binary) > 18)
+                import cv2
+                image = cv2.imdecode(np.frombuffer(ws.binary[-1][3:], np.uint8), cv2.IMREAD_COLOR)
+                self.assertGreater(image.mean(), 250)
+                self.assertEqual(backend.pipe.call_args.kwargs['prompt'], 'a red car')
             finally:
                 resume.set()
                 await ws.close()

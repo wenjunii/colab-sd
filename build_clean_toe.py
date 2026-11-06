@@ -315,11 +315,20 @@ def onReceiveText(dat, rowIndex, message):
             speed = getattr(parent().par, 'Ltxspeed', None)
             if speed is not None:
                 speed.val = f"{data.get('ltx_generated_fps', 0):.2f} new FPS | prompt cache {'hit' if data.get('ltx_prompt_cache_hit') else 'miss'}"
+            playback = getattr(parent().par, 'Ltxplayback', None)
+            if playback is not None:
+                playback.val = ('New prompt loading; old clips discarded' if data.get('ltx_prompt_pending') else
+                                f"{data.get('ltx_playback_fps', 0):.2f} FPS | " +
+                                ('preparing lookahead' if data.get('world_phase') == 'buffering' else
+                                 'rendering ahead' if data.get('ltx_rendering') else 'buffer ready'))
             if msg_type == 'welcome':
                 for par_name, field in (('Ltxcontinuous', 'ltx_continuous'), ('Ltxchain', 'ltx_continue_scene')):
                     target = getattr(parent().par, par_name, None)
                     if target is not None and field in data:
                         target.val = bool(data[field])
+                refresh = getattr(parent().par, 'Ltxrefresh', None)
+                if refresh is not None and 'ltx_refresh_every' in data:
+                    refresh.val = int(data['ltx_refresh_every'])
         if 'krea_block' in data:
             info = getattr(parent().par, 'Kreainfo', None)
             if info is not None:
@@ -505,7 +514,8 @@ def send_control(force=False, strength_override=None, world_reset=False, world_r
                'prompt_a': prompt_a, 'seed': seed_val,
                'ltx_paused': bool(parameter('Ltxpaused', False)), 'ltx_generate': bool(ltx_generate),
                'ltx_continuous': bool(parameter('Ltxcontinuous', True)),
-               'ltx_continue_scene': bool(parameter('Ltxchain', True))}
+               'ltx_continue_scene': bool(parameter('Ltxchain', True)),
+               'ltx_refresh_every': int(parameter('Ltxrefresh', 4))}
     elif mode == 'krea':
         msg = {'type': 'control', 'mode': 'krea', 'width': width, 'height': height,
                'prompt_a': prompt_a, 'seed': seed_val,
@@ -906,7 +916,7 @@ def onValueChange(par, prev):
             parent().store('control_pending', True)
         elif par.name in ('Worldbuttons', 'Worldmousex', 'Worldmousey', 'Worldpaused',
                           'Worldseedsource', 'Worldautoseed', 'Worldseedinterval', 'Kreapaused', 'Ltxpaused',
-                          'Ltxcontinuous', 'Ltxchain'):
+                          'Ltxcontinuous', 'Ltxchain', 'Ltxrefresh'):
             parent().store('control_pending', True)
         elif par.name == 'Displaymode':
             rec = op('script_receiver')
@@ -1129,6 +1139,8 @@ pages 4 StreamDiffusion World Krea LTX
 772804867 Ltxchain "Continue Scene from Last Frame" 1 1 0 0 1 1 1 2 0 "" "" LTX 3
 772804868 Ltxspeed "LTX Generation Speed" 1 1 0 0 1 1 1 2 0 "" "" LTX 4
 772804868 Ltxinfo "LTX Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" LTX 5
+772804868 Ltxplayback "Steady Playback" 1 1 0 0 1 1 1 2 0 "" "" LTX 6
+772804866 Ltxrefresh "Refresh Scene Every N Clips (0=Off, max 32)" 1 1 0 0 1 1 1 2 0 "" "" LTX 7
 ?
 '''
 
@@ -1185,6 +1197,8 @@ Ltxcontinuous 67108928 on
 Ltxchain 67108928 on
 Ltxspeed 67109184 "0.00 new FPS"
 Ltxinfo 67109184 "Waiting for LTX"
+Ltxplayback 67109184 "Waiting for lookahead"
+Ltxrefresh 67108928 4
 ?
 '''
 
@@ -1287,7 +1301,7 @@ def build_toe_and_tox(project_dir=None, collapse_exe=None):
     (component / 'latency_callbacks.n').write_text(
         'DAT:text\ntile 0 300 130 90\nflags = parlanguage 0\ndock latency_ws\nend\n', encoding='utf-8', newline='\n')
     (component / 'latency_callbacks.parm').write_text('?\nlanguage 0 python\n?\n', encoding='utf-8', newline='\n')
-    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused Ltxcontinuous Ltxchain'
+    controls = 'Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused Ltxcontinuous Ltxchain Ltxrefresh'
     (component / 'parexec_controls.parm').write_text(
         '?\nfromop 201326609 "" parent()\nop 67108864 ..\n'
         f'pars 67108864 "{controls}"\nlanguage 67108864 python\n?\n', encoding='utf-8', newline='\n')
