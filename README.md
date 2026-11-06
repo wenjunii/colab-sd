@@ -302,7 +302,7 @@ All four backends use the same `colab_server.py`, protocol, compression, ACK win
 
 Krea/LTX currently require **Ampere+ and a 40 GB+ GPU with 30 GiB free VRAM**; a 16/24/32 GB consumer RTX does not meet this adapter's preflight. A compatible 48 GB or larger RTX workstation is a target, but GPU inference/FPS on that hardware is not established by the A100 measurements. No automatic lower-memory model conversion is provided.
 
-Install **Git**, **Python 3.11**, and a current **NVIDIA driver** on the workstation. TouchDesigner can stay on another computer. The workstation needs internet access for the initial Python/model downloads. A separately installed CUDA toolkit alone does not establish compatibility: the NVIDIA driver must support the selected [PyTorch CUDA wheel](https://pytorch.org/get-started/locally/).
+Install **Git**, **Python 3.11** for StreamDiffusion/Waypoint/Krea (**Python 3.13 for LTX**), and a current **NVIDIA driver** on the workstation. TouchDesigner can stay on another computer. The workstation needs internet access for the initial Python/model downloads. A separately installed CUDA toolkit alone does not establish compatibility: the NVIDIA driver must support the selected [PyTorch CUDA wheel](https://pytorch.org/get-started/locally/).
 
 Windows PowerShell:
 
@@ -412,11 +412,11 @@ Use `python3.11` instead of `py -3.11` on Linux. This installs the same pinned *
 #### LTX-2.5 on the workstation (Windows / Linux, experimental)
 
 ```powershell
-py -3.11 workstation.py setup --backend ltx
-py -3.11 workstation.py start --backend ltx --resolution 768x512 --advertise-host 192.168.1.50
+py -3.13 workstation.py setup --backend ltx
+py -3.13 workstation.py start --backend ltx --resolution 768x512 --advertise-host 192.168.1.50
 ```
 
-The separate runtime pins **Torch 2.11.0 / cu130**, Transformers 5.14.1 and the same hash-verified LTX source and split weights as Colab. Existing Hugging Face login credentials or an `HF_TOKEN` in the workstation shell supply model access; the account must have accepted the model terms. For a one-time login after setup, run `.\.workstation-ltx\venv\Scripts\hf.exe auth login` on Windows or `.workstation-ltx/venv/bin/hf auth login` on Linux. Keep credentials out of source and Git. Cache options do not relocate the login/token path. Application and model-weight licenses remain separate, as documented in the LTX section.
+Use `python3.13` on Linux. LTX requires Python **3.13**, matching Colab; its pinned PyAV 19 does not support Python 3.11. The separate runtime pins **Torch 2.11.0 / cu130**, Transformers 5.14.1 and the same hash-verified LTX source and split weights as Colab. Existing Hugging Face login credentials or an `HF_TOKEN` in the workstation shell supply model access; the account must have accepted the model terms. For a one-time login after setup, run `.\.workstation-ltx\venv\Scripts\hf.exe auth login` on Windows or `.workstation-ltx/venv/bin/hf auth login` on Linux. Keep credentials out of source and Git. Cache options do not relocate the login/token path. Application and model-weight licenses remain separate, as documented in the LTX section.
 
 Defaults match Colab: **1024 × 576 / 33 frames / resident / continuous On / Continue Scene On / Scene Refresh 4**. Select `--resolution 512x512`, `768x512`, `1024x576` or `1024x768`; `--clip-frames 17`, `33`, `65` or `121`; `--performance-profile resident` or `low_memory`; and optional `--input-image PATH`. `--no-continuous`, `--no-continue-scene` and `--refresh-every 0` disable the corresponding defaults for that launch. The supported refresh range is 0–32 clips. LTX has no StreamDiffusion TensorRT option.
 

@@ -42,11 +42,12 @@ def runtime_python(runtime):
     return Path(runtime) / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
 
 
-def check_platform():
+def check_platform(python_version=(3, 11)):
     if platform.system() not in ('Windows', 'Linux') or platform.machine().lower() not in ('amd64', 'x86_64'):
         raise RuntimeError('Workstation mode needs Windows or Linux x86-64 with an NVIDIA CUDA GPU.')
-    if sys.version_info[:2] != (3, 11):
-        raise RuntimeError('Run this installer with Python 3.11 (Windows: py -3.11 workstation.py setup).')
+    if sys.version_info[:2] != python_version:
+        version = '.'.join(map(str, python_version))
+        raise RuntimeError(f'Run this installer with Python {version} (Windows: py -{version} workstation.py setup).')
 
 
 def gpu_check(python, root, backend='sd-turbo'):
@@ -209,9 +210,17 @@ def modern_revisions(backend):
     return {'krea': MODEL_REVISION, 'wan': WAN_REVISION}
 
 
+def modern_signature(backend):
+    signature = modern_installer(backend).installation_signature()
+    # Runtime identity is independent of the lightweight launcher's Python.
+    # LTX's pinned PyAV 19 requires >=3.12; use Colab's verified Python 3.13.
+    signature['python'] = [3, 13] if backend == 'ltx' else [3, 11]
+    return signature
+
+
 def setup_modern(runtime, backend, model_cache=None):
     """Use Colab's pinned installer, with backend-specific persistent storage."""
-    check_platform()
+    check_platform((3, 13) if backend == 'ltx' else (3, 11))
     runtime = Path(runtime).resolve()
     marker = runtime / 'workstation.json'
     previous = {}
@@ -225,7 +234,7 @@ def setup_modern(runtime, backend, model_cache=None):
     runtime.mkdir(parents=True, exist_ok=True)
     cache = Path(model_cache or previous.get('model_cache') or runtime / 'models').expanduser().resolve()
     configuration = {'managed_by': 'colab-sd', 'backend': backend, 'ready': False,
-                     'revisions': modern_revisions(backend), 'installation': installer.installation_signature(),
+                     'revisions': modern_revisions(backend), 'installation': modern_signature(backend),
                      'model_cache': str(cache)}
     marker.write_text(json.dumps(configuration, indent=2) + '\n', encoding='utf-8')
     waypoint_model_cache(runtime, cache)
@@ -244,8 +253,7 @@ def cache_environment(runtime, selected, legacy=False):
 
 def modern_environment(runtime, configuration, arguments):
     backend = arguments.backend
-    installer = modern_installer(backend)
-    expected = installer.installation_signature()
+    expected = modern_signature(backend)
     installed = runtime / 'installed.json'
     if (configuration.get('revisions') != modern_revisions(backend)
             or configuration.get('installation') != expected or not installed.is_file()
@@ -395,8 +403,8 @@ def main(argv=None):
     install = commands.add_parser('setup', help='Install a separate CUDA runtime for the selected backend')
     install.add_argument('--backend', choices=tuple(RUNTIMES), default='sd-turbo')
     install.add_argument('--runtime', type=Path, help='Default: .workstation or .workstation-BACKEND')
-    install.add_argument('--cuda', help='SD-Turbo CUDA wheel tag (default: cu130); Waypoint pins cu130')
-    install.add_argument('--torch-version', help=f'SD-Turbo Torch version (default: {TORCH_VERSION}); Waypoint pins 2.11.0')
+    install.add_argument('--cuda', help='SD-Turbo CUDA wheel tag (default: cu130); other backends pin cu130')
+    install.add_argument('--torch-version', help=f'SD-Turbo default: {TORCH_VERSION}; Waypoint/LTX pin 2.11.0; Krea pins 2.13.0')
     install.add_argument('--prompt-seeds', action='store_true', help='Waypoint: install and enable optional Turbo prompt seeds')
     install.add_argument('--prompt-seed-model', choices=PROMPT_SEED_MODELS,
                          help='Waypoint seed generator (default: sd-turbo); requires --prompt-seeds')

@@ -35,7 +35,7 @@ class ModernWorkstationChecks(unittest.TestCase):
         python = workstation.runtime_python(runtime)
         python.parent.mkdir(parents=True, exist_ok=True)
         python.touch()
-        signature = workstation.modern_installer(backend).installation_signature()
+        signature = workstation.modern_signature(backend)
         config = {'managed_by': 'colab-sd', 'backend': backend, 'ready': True,
                   'installation': signature, 'revisions': workstation.modern_revisions(backend),
                   'model_cache': str(runtime / 'models')}
@@ -64,6 +64,7 @@ class ModernWorkstationChecks(unittest.TestCase):
                 with self.subTest(backend=backend, system=system), \
                         patch.object(workstation.platform, 'system', return_value=system), \
                         patch.object(workstation.platform, 'machine', return_value='x86_64'), \
+                        patch.object(workstation.sys, 'version_info', (3, 13) if backend == 'ltx' else (3, 11)), \
                         patch.object(installer, 'setup') as install, patch.object(workstation, 'run_pip') as legacy, \
                         patch.dict(os.environ, {'HF_HUB_CACHE': 'parent-cache', 'HF_TOKEN': 'fixture-secret'}), \
                         patch('builtins.print'):
@@ -212,6 +213,15 @@ class ModernWorkstationChecks(unittest.TestCase):
                 port.assert_not_called()
                 download.assert_not_called()
                 self.assertEqual(json.loads((root / 'installed.json').read_text()), installer.installation_signature())
+
+    def test_ltx_requires_python_313_before_creating_an_environment(self):
+        with patch.object(workstation.platform, 'system', return_value='Windows'), \
+                patch.object(workstation.platform, 'machine', return_value='AMD64'), \
+                patch.object(workstation.sys, 'version_info', (3, 11)), patch.object(ltx_setup, 'setup') as install:
+            with self.assertRaisesRegex(RuntimeError, 'Python 3.13'):
+                workstation.setup_modern(self.root / 'wrong-python', 'ltx')
+            install.assert_not_called()
+            self.assertFalse((self.root / 'wrong-python').exists())
 
     def test_gpu_checks_and_launcher_import_need_no_host_torch_or_numpy(self):
         with patch.object(workstation.subprocess, 'run') as run:
