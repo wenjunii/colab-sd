@@ -108,6 +108,8 @@ For `Failed to create component tokenizer`, `JSONDecodeError`, or `NoneType is n
 
 This is a short server-side validation on an already-used VM, with Fast quality, three-frame credits and immediate ACKs. One initial attempt failed at the next chunk; the retained repeat passed and logged allocator OOM retries, so 40 GB memory headroom is tight. **Fresh-VM/cold-compile reliability, long-session quality and sustained TouchDesigner FPS remain unverified.** These chunk timings are slower than real-time and exclude home-network delivery and TD cooking. Krea's published B200 result does not predict A100 performance.
 
+A subsequent normal server launch delivered visible motion to **TouchDesigner 2025.32820** through the HTTP/2 Cloudflare tunnel for **19 chunks**, then passed client Pause, Reset and resume (six further chunks checked). The independent network probe sampled roughly **127–145 ms**. Later sampled chunks took about **6.9–7.3 seconds for twelve frames**. The client can show a much higher FPS while a finished chunk arrives in a burst; that readout does not establish sustained generation speed. This short client check reused the same VM/cache and six-frame delivery window; it is not a long-session benchmark.
+
 ## Waypoint on Colab A100 40 GB (experimental)
 
 [Open the Waypoint notebook in Colab](https://colab.research.google.com/github/wenjunii/colab-sd/blob/main/Waypoint_Colab_Server.ipynb).
