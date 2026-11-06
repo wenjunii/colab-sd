@@ -43,14 +43,19 @@ def optimize_pipeline(pipe, paths, quantization, profile):
     if profile == 'resident':
         from ltx_core.allocator_trim_strategy import AllocatorTrimStrategy
         from ltx_core.loader.registry import ModelRegistry
-        from ltx_pipelines.utils.blocks import DiffusionStage
+        from ltx_pipelines.utils.blocks import DiffusionStage, PromptEncoder
         from ltx_pipelines.utils.types import OffloadMode
         # Upstream's shared allocation reuses the quantized transformer between
-        # both denoising stages and subsequent clips. Gemma stays CPU-offloaded.
+        # both denoising stages and subsequent clips.
         pipe.stage = DiffusionStage.from_checkpoint(paths.transformer(), pipe.dtype, pipe.device,
             quantization=quantization, registry=ModelRegistry(), active_weights={},
             offload_mode=OffloadMode.NONE, alloc_trim_strategy=AllocatorTrimStrategy.DEFER)
         # A changed prompt can load a large encoder: release DiT first on 40 GB.
         release = pipe.stage.release_transformer
+        # Gemma fits on a 40 GB A100 when DiT is released first. Its context
+        # manager disposes it before the transformer is loaded, avoiding layer
+        # streaming during encoding without retaining both large models at once.
+        pipe.prompt_encoder = PromptEncoder(paths, pipe.dtype, pipe.device,
+            registry=ModelRegistry(), offload_mode=OffloadMode.NONE)
     pipe.prompt_encoder = CachedPromptEncoder(pipe.prompt_encoder, on_miss=release)
     return pipe

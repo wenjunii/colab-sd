@@ -39,6 +39,7 @@ def main():
     backend = LTXBackend.load(Path(__file__).resolve().parent)
     report = {'gpu': torch.cuda.get_device_name(), 'torch': torch.__version__, 'engine': backend.engine,
               'size': [width, height], 'frames_per_clip': args.frames, 'image_conditioning': bool(args.image),
+              'continuous': args.continuous, 'scene_continuation': backend.continue_scene,
               'construction_seconds': round(time.perf_counter() - started, 3), 'clips': []}
     print('LTX_READY ' + json.dumps(report), flush=True)
     backend.configure({'ltx_continuous': args.continuous})
@@ -57,6 +58,7 @@ def main():
             last, _ = backend.next_frame()
             count += 1
         assert count == args.frames and first.std() > 2 and last.std() > 2
+        assert backend.last_seed == seed
         assert cv2.imwrite(str(output / f'clip-{seed}-first.jpg'), first)
         assert cv2.imwrite(str(output / f'clip-{seed}-last.jpg'), last)
         item = {'seed': seed, 'decoded_frames': count, 'first_frame_seconds': round(first_seconds, 3),
@@ -65,6 +67,7 @@ def main():
                 'profile': backend.profile, 'actual_seed': backend.last_seed,
                 'prompt_cache_hit': backend.progress()['ltx_prompt_cache_hit'],
                 'prompt_seconds': backend.progress()['ltx_prompt_ms'] / 1000,
+                'first_last_mean_difference': round(float(cv2.norm(first, last, cv2.NORM_L1) / first.size), 3),
                 'peak_allocated_gib': round(torch.cuda.max_memory_allocated() / 1024**3, 3),
                 'peak_reserved_gib': round(torch.cuda.max_memory_reserved() / 1024**3, 3)}
         report['clips'].append(item)

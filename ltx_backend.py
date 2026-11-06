@@ -237,6 +237,8 @@ class LTXBackend:
             except Exception as exc:
                 self.frames.clear()
                 self.failed = True
+                if self.profile == 'resident':
+                    self.pipe.stage.release_transformer()
                 self._phase('error')
                 raise ValueError('LTX clip failed; inspect server logs before retrying') from exc
         frame = cv2.cvtColor(self.frames.popleft(), cv2.COLOR_RGB2BGR)
