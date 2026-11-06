@@ -328,6 +328,10 @@ The cache settings cover both modern Hugging Face Hub and the project's legacy D
 
 ### 1B. Run on an RTX workstation instead of Colab
 
+**Compact WebP is available on Windows and Linux for every workstation backend:** StreamDiffusion (SD-Turbo / SDXL-Turbo), Waypoint, Krea and LTX. Update this checkout, restart the selected workstation server when ready, and load the rebuilt TD component. In TD select **Server Location → RTX Workstation**, enter the server URL and its existing **Workstation Access Token**, then choose **Streaming → Video Transport → WebSocket images (JPEG / WebP)**, **Video Quality → Compact WebP (12 KB target)** and **Video Buffer → 3 (balanced)**. These quality/buffer controls are on the **StreamDiffusion** page and apply to every backend. Startup prints the same settings. The workstation uses the shared server/encoder; the native resolution and model/engine selection are unchanged. This compression option uses existing dependencies and does not require reinstalling the runtime, downloading weights or rebuilding TensorRT engines. WebRTC remains available for direct LAN/Tailscale connections.
+
+For an already connected Tailscale workstation, use the existing LAN transport with `--bind WORKSTATION-TAILSCALE-IP --advertise-host WORKSTATION-TAILSCALE-IP`; TD connects to `ws://WORKSTATION-TAILSCALE-IP:8000/ws/stream` with the pairing token. Unlike Colab's userspace proxy, a normal Windows/Linux Tailscale interface can also carry native WebRTC media when access rules/firewalls permit it. Compact WebP works over this private TCP route, normal LAN, or the existing Cloudflare HTTP/2 tunnel. The Colab transport benchmark above is not a workstation GPU/display FPS guarantee.
+
 All four backends use the same `colab_server.py`, protocol, compression, ACK windows, ping probe and TouchDesigner component as Colab. Updating this repository applies shared server fixes at the next workstation launch. Each backend has its own environment and persistent caches:
 
 | Backend flag | Environment | Default output | Same Colab behavior |
