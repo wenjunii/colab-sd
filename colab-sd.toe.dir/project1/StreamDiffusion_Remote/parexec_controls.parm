@@ -1,6 +1,6 @@
 ?
 fromop 201326609 "" parent()
 op 67108864 ..
-pars 67108864 "Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused"
+pars 67108864 "Serverlocation Serverurl Accesstoken Connect Mode Resolution Framewindow Videoquality Source Displaymode Prompta Promptb Promptblend Negprompt Submitprompt Strength Seed Randomseed Snapshot Snapdir Audiorx Audiochop Audstrength Audseedthresh Worldseed Worldreset Worldpaused Worldbuttons Worldmousex Worldmousey Worldseedsource Worldautoseed Worldseedinterval Worldpromptseed Kreapaused Kreareset Ltxgenerate Ltxpaused Ltxcontinuous Ltxchain"
 language 67108864 python
 ?

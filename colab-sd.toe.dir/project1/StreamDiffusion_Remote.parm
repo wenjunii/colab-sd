@@ -47,5 +47,8 @@ Worldseedinfo 67109184 "Prompt model: --"
 Kreapaused 67108928 off
 Kreainfo 67109184 "Waiting for Krea"
 Ltxpaused 67108928 off
+Ltxcontinuous 67108928 on
+Ltxchain 67108928 on
+Ltxspeed 67109184 "0.00 new FPS"
 Ltxinfo 67109184 "Waiting for LTX"
 ?

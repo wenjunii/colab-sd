@@ -53,7 +53,10 @@ pages 4 StreamDiffusion World Krea LTX
 772804867 Kreapaused "Pause Krea" 1 1 0 0 1 1 1 2 0 "" "" Krea 0
 772804869 Kreareset "Reset Krea Clip" 1 1 0 0 1 1 1 2 0 "" "" Krea 1
 772804868 Kreainfo "Krea Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" Krea 2
-772804869 Ltxgenerate "Generate Clip" 1 1 0 0 1 1 1 2 0 "" "" LTX 0
-772804867 Ltxpaused "Pause LTX Playback" 1 1 0 0 1 1 1 2 0 "" "" LTX 1
-772804868 Ltxinfo "LTX Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" LTX 2
+772804867 Ltxcontinuous "Continuous Generation" 1 1 0 0 1 1 1 2 0 "" "" LTX 0
+772804869 Ltxgenerate "Generate or Restart" 1 1 0 0 1 1 1 2 0 "" "" LTX 1
+772804867 Ltxpaused "Pause LTX" 1 1 0 0 1 1 1 2 0 "" "" LTX 2
+772804867 Ltxchain "Continue Scene from Last Frame" 1 1 0 0 1 1 1 2 0 "" "" LTX 3
+772804868 Ltxspeed "LTX Generation Speed" 1 1 0 0 1 1 1 2 0 "" "" LTX 4
+772804868 Ltxinfo "LTX Clip Progress" 1 1 0 0 1 1 1 2 0 "" "" LTX 5
 ?
