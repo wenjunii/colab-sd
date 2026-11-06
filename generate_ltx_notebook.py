@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from textwrap import dedent
-from generate_notebook import PROJECT_DIR, code_cell
+from generate_notebook import PROJECT_DIR, STREAMING_GUIDE, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'webrtc_transport.py', 'tensorrt_backend.py',
            'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_quant.py', 'krea_weights.py',
@@ -169,7 +169,7 @@ Keep the Colab launch cell and TouchDesigner running for playback.
         finally:
             ltx_session.stop()
     ''')
-    return {'cells': [{'cell_type': 'markdown', 'metadata': {}, 'source': intro.splitlines(keepends=True)},
+    return {'cells': [{'cell_type': 'markdown', 'metadata': {}, 'source': (intro + STREAMING_GUIDE).splitlines(keepends=True)},
                       *[code_cell(s) for s in (check, setup, launch)]],
             'metadata': {'accelerator': 'GPU', 'colab': {'gpuType': 'A100', 'provenance': []},
                          'language_info': {'name': 'python'}}, 'nbformat': 4, 'nbformat_minor': 0}
