@@ -70,7 +70,7 @@ cause gaps; this is slower motion, not 24 newly generated FPS or guaranteed seam
 Continuation PNGs use `crf=0` to skip the runtime's lossy H.264 input re-compression.
 VAE feedback and generative drift can still accumulate. **REFRESH_SCENE_EVERY = 4**
 returns to Prompt A / the startup image after every four clips, breaking that chain.
-It may create a scene cut. Change **Refresh Scene Every N Clips** live in TD, or set
+It may create a scene cut. Change **Scene Refresh (0=Off)** live in TD, or set
 0 to disable periodic refresh. Prompt edits always reset the old scene immediately.
 
 For opt-in GPU validation, stop Step 3 and run the existing isolated Python:
