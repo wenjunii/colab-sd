@@ -8,11 +8,11 @@ from generate_notebook import PROJECT_DIR, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'tensorrt_backend.py',
            'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_assets.py', 'krea_weights.py',
-           'krea_quant.py', 'krea_backend.py')
+           'krea_quant.py', 'krea_backend.py', 'check_krea_gpu.py')
 
 
 def make_notebook(project_dir=PROJECT_DIR):
-    intro = '''# Krea Realtime → TouchDesigner (experimental, GPU validation pending)
+    intro = '''# Krea Realtime → TouchDesigner (experimental)
 Text-driven video through the official **Hugging Face modular runtime**, whose model card
 declares **Apache-2.0**, with pinned Wan components (Apache-2.0). The similarly named
 Krea GitHub application is **CC-BY-NC-SA** and is **not installed or copied** here.
@@ -35,7 +35,11 @@ stops another server. Its isolated environment does not replace notebook kernel 
 
 This first trial uses an **INT8 transformer**, CPU-offloaded text encoder, resident FP16 VAE,
 four denoise steps, and PyTorch attention. INT8 preserves room for temporal caches on a 40 GB
-GPU; memory use, speed and visual quality still require a real GPU test. No FPS is promised.
+GPU. Basic 832 × 480 INT8 generation passed on Colab A100 40 GB with an existing VM/cache:
+31 JPEGs decoded through the server WebSocket path, including pause and reset controls.
+The measured 12-frame chunk took 9.8 seconds; this path is not real-time on that A100.
+Peak Torch allocation was 35.6 GiB, and allocator retries indicate tight memory headroom.
+Fresh-VM/cold-compile reliability, long-session quality and sustained TD FPS remain unverified.
 The model's published B200 benchmark does not establish A100 performance. First generation
 may compile kernels; Status reports this separately from model-loaded readiness.
 
@@ -71,6 +75,11 @@ the current Step 3 cell first, then rerun updated Steps 2 and 3 on the same VM/c
 Keep the runtime connected: validated local weight copies are reused. The tokenizer
 and scheduler must load and pass a tokenization check before transformer loading;
 every required component is checked before the server advertises readiness.
+
+The INT8 adapter flattens rank-4/higher Linear inputs to a two-dimensional matrix
+and restores their leading dimensions after matmul. This handles Krea's four-dimensional
+output-head input with bitsandbytes 0.50.2. Quantized weights, outlier thresholds and
+native rank-2/rank-3 calls are retained; no vendor package files are patched.
 
 [HF runtime/model and declared license](https://huggingface.co/krea/krea-realtime-video/tree/9a2ceea280e5d584c6a28d384a9c19e38c810f8c) ·
 [Wan components/license](https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers/tree/38ec498cb3208fb688890f8cc7e94ede2cbd7f68) ·
