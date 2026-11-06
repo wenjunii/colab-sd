@@ -162,6 +162,7 @@ class KreaChecks(unittest.TestCase):
         accelerate = SimpleNamespace(cpu_offload=Mock())
         with patch.dict('sys.modules', {'diffusers': diffusers, 'accelerate': accelerate,
                 'diffusers.modular_pipelines': SimpleNamespace(PipelineState=lambda: SimpleNamespace(values={}))}), \
+                patch('krea_quant.prepare_int8_linears'), \
                 patch('krea_backend.gpu_preflight'), patch.object(assets, 'download_assets', return_value=('model', 'pipe')):
             KreaBackend.load(Path('owned-runtime'))
             kwargs = diffusers.AutoModel.from_pretrained.call_args.kwargs
