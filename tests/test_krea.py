@@ -163,18 +163,34 @@ class KreaChecks(unittest.TestCase):
         with patch.dict('sys.modules', {'diffusers': diffusers, 'accelerate': accelerate,
                 'diffusers.modular_pipelines': SimpleNamespace(PipelineState=lambda: SimpleNamespace(values={}))}), \
                 patch('krea_quant.prepare_int8_linears'), \
+                patch('krea_quant.prepare_vae_layout') as layout, \
                 patch('krea_backend.gpu_preflight'), patch.object(assets, 'download_assets', return_value=('model', 'pipe')):
             KreaBackend.load(Path('owned-runtime'))
             kwargs = diffusers.AutoModel.from_pretrained.call_args.kwargs
             self.assertTrue(kwargs['local_files_only'])
             self.assertEqual(kwargs['device_map'], 'cuda')
-            diffusers.BitsAndBytesConfig.assert_called_once_with(load_in_8bit=True)
+            diffusers.BitsAndBytesConfig.assert_called_once_with(load_in_8bit=True, llm_int8_threshold=0.0)
             self.assertEqual([call.kwargs['names'] for call in pipe.load_components.call_args_list],
                              [['tokenizer', 'scheduler'], ['text_encoder', 'vae']])
             self.assertIs(accelerate.cpu_offload.call_args.args[0], pipe.text_encoder)
+            with patch.dict(os.environ, {'KREA_INT8_PROFILE': 'balanced'}):
+                balanced = KreaBackend.load(Path('owned-runtime'))
+            self.assertEqual(diffusers.BitsAndBytesConfig.call_args.kwargs,
+                             {'load_in_8bit': True, 'llm_int8_threshold': 6.0})
+            self.assertEqual(balanced.progress()['krea_int8_profile'], 'balanced')
+            self.assertIn('Balanced INT8', balanced.engine)
+            self.assertEqual([call.args[1] for call in layout.call_args_list], ['fast', 'balanced'])
             transformer.is_loaded_in_8bit = False
             with self.assertRaisesRegex(RuntimeError, 'did not activate'):
                 KreaBackend.load(Path('owned-runtime'))
+
+    def test_invalid_startup_profile_stops_before_gpu_checks_and_downloads(self):
+        with patch.dict(os.environ, {'KREA_INT8_PROFILE': 'invalid'}), \
+                patch('krea_backend.gpu_preflight') as gpu, patch.object(assets, 'download_assets') as download:
+            with self.assertRaisesRegex(ValueError, 'KREA_INT8_PROFILE'):
+                KreaBackend.load(Path('owned-runtime'))
+            gpu.assert_not_called()
+            download.assert_not_called()
 
     def test_pinned_runtime_config_is_copied_without_mutating_cached_source(self):
         with tempfile.TemporaryDirectory(prefix='colab-sd-test-krea-') as directory:

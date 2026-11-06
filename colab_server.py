@@ -146,7 +146,10 @@ img2img_engine = "PyTorch (FP16)"
 
 def engine_for_mode(mode=None):
     if is_krea_backend:
-        return 'Krea 14B (INT8 transformer)'
+        if krea_backend is not None:
+            return krea_backend.engine
+        from krea_quant import int8_engine_label
+        return int8_engine_label(os.environ.get('KREA_INT8_PROFILE', 'fast'))
     if is_world_backend:
         return 'Waypoint (INT8)' if os.environ.get('WAYPOINT_QUANT', 'intw8a8') == 'intw8a8' else 'Waypoint (BF16)'
     if enable_tensorrt and not pipeline_ready:

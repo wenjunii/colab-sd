@@ -8,7 +8,7 @@ from generate_notebook import PROJECT_DIR, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'tensorrt_backend.py',
            'colab_setup.py', 'waypoint_setup.py', 'krea_setup.py', 'krea_assets.py', 'krea_weights.py',
-           'krea_quant.py', 'krea_backend.py', 'check_krea_gpu.py')
+           'krea_quant.py', 'krea_backend.py', 'check_krea_gpu.py', 'benchmark_krea.py')
 
 
 def make_notebook(project_dir=PROJECT_DIR):
@@ -33,12 +33,22 @@ stops another server. Its isolated environment does not replace notebook kernel 
 4. Edit **Prompt A** / pulse **Submit Prompts**. Changes apply at the next generated chunk.
    Use the **Krea** page to Pause or Reset Krea Clip. Seed changes restart the clip.
 
-This first trial uses an **INT8 transformer**, CPU-offloaded text encoder, resident FP16 VAE,
-four denoise steps, and PyTorch attention. INT8 preserves room for temporal caches on a 40 GB
-GPU. Basic 832 × 480 INT8 generation passed on Colab A100 40 GB with an existing VM/cache:
-31 JPEGs decoded through the server WebSocket path, including pause and reset controls.
-The measured 12-frame chunk took 9.8 seconds; this path is not real-time on that A100.
-Peak Torch allocation was 35.6 GiB, and allocator retries indicate tight memory headroom.
+This trial uses an **INT8 transformer**, CPU-offloaded text encoder, resident FP16 VAE,
+four denoise steps, and PyTorch attention. Step 3 defaults to **INT8_PROFILE = fast**:
+outlier threshold 0 skips the separate FP16 correction pass, prioritizing FPS with possible
+image-quality changes. **balanced** retains the previous threshold 6. This startup choice
+reuses weights; the TouchDesigner engine label identifies the selected profile.
+Fast also uses a channels-last VAE convolution layout, preserving weight values/dimensions.
+It reduced measured decode time about 568 → 526 ms and peak allocation by 0.4 GiB;
+the transformer remains the main cost. Balanced loads the original VAE layout.
+A matched A100 40 GB comparison measured about **1.7 generated FPS Balanced → 2.1 Fast**
+at native 832 × 480 and four steps (12-frame chunks about 7.0 → 5.7 seconds).
+Both baselines and Fast used the same cached model, prompt, seed and GPU tuning; each
+variant generated four chunks with the first two excluded from steady-state timing.
+This path remains slower than real-time on that A100. Model loading reused all nine
+checkpoints and took about 198 seconds. Peak Torch allocated/reserved memory was
+35.4 / 36.3 GiB in the threshold comparison and about 35.0 / 36.0 GiB with Fast's VAE layout;
+40 GB headroom remains tight. Both used expandable allocator segments.
 Fresh-VM/cold-compile reliability, long-session quality and sustained TD FPS remain unverified.
 The model's published B200 benchmark does not establish A100 performance. First generation
 may compile kernels; Status reports this separately from model-loaded readiness.
@@ -78,8 +88,12 @@ every required component is checked before the server advertises readiness.
 
 The INT8 adapter flattens rank-4/higher Linear inputs to a two-dimensional matrix
 and restores their leading dimensions after matmul. This handles Krea's four-dimensional
-output-head input with bitsandbytes 0.50.2. Quantized weights, outlier thresholds and
-native rank-2/rank-3 calls are retained; no vendor package files are patched.
+output-head input with bitsandbytes 0.50.2. It preserves quantized weights, the selected
+outlier threshold and native rank-2/rank-3 calls; no vendor package files are patched.
+Krea children use expandable CUDA allocator segments unless either allocator environment
+alias is explicitly set. Only repeated copies of the pinned INT8 cast warning are suppressed.
+For a GPU comparison, stop Step 3 and run the isolated runtime's Python with
+`benchmark_krea.py --output captures/krea-benchmark`; reports and frames are retained.
 
 [HF runtime/model and declared license](https://huggingface.co/krea/krea-realtime-video/tree/9a2ceea280e5d584c6a28d384a9c19e38c810f8c) ·
 [Wan components/license](https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers/tree/38ec498cb3208fb688890f8cc7e94ede2cbd7f68) ·
@@ -141,15 +155,19 @@ native rank-2/rank-3 calls are retained; no vendor package files are patched.
         # @title Step 3: Launch Krea and Cloudflare
         MAX_FPS = 24 # @param {type:"integer"}
         CLIP_CHUNKS = 64 # @param {type:"integer"}
+        INT8_PROFILE = "fast" # @param ["fast", "balanced"]
         TUNNEL_PROTOCOL = "http2" # @param ["http2", "auto", "quic"]
         if not 1 <= CLIP_CHUNKS <= 64:
             raise ValueError('CLIP_CHUNKS must be between 1 and 64.')
+        if INT8_PROFILE not in ('fast', 'balanced'):
+            raise ValueError('INT8_PROFILE must be fast or balanced.')
         if 'krea_session' in globals():
             krea_session.stop()
         import importlib
         import colab_launcher
         importlib.reload(colab_launcher)
         os.environ['KREA_CLIP_BLOCKS'] = str(CLIP_CHUNKS)
+        os.environ['KREA_INT8_PROFILE'] = INT8_PROFILE
         krea_session = colab_launcher.BridgeSession(
             root=runtime_root, backend='krea', server_script='colab_server.py',
             python_executable=krea_python, cloudflared=krea_tunnel,

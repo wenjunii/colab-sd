@@ -86,9 +86,17 @@ The manifest now also covers all **24 tokenizer, configuration, scheduler, index
 
 The first trial uses **INT8 transformer weights**, a CPU-offloaded BF16 text encoder, a resident FP16 Wan VAE, **four denoise steps**, and PyTorch attention. Projection fusion is disabled to preserve quantized linears. Only Prompt A and Seed steer this T2V path; Prompt B/blend, negative prompts, input video, denoise strength, audio reactivity and Waypoint movement controls are unused. Other sizes are disabled because the pinned custom transformer assumes a 1,560-token frame at 832 × 480.
 
+Step 3 now defaults to **INT8_PROFILE = fast**. This sets bitsandbytes' outlier threshold to **0**, skipping its separate FP16 outlier correction pass. It prioritizes FPS and can change image quality; choose **balanced** for the previous threshold of **6**. [Hugging Face documents this speed/accuracy tradeoff](https://huggingface.co/docs/transformers/en/quantization/bitsandbytes#outlier-threshold). The profile is a startup choice: stop Step 3, select it, and relaunch. Weights and the existing environment are reused. TouchDesigner's Acceleration Engine reports **Fast INT8** or **Balanced INT8**. Resolution and denoise steps remain the same.
+
+Fast also converts only VAE Conv3d weights to [PyTorch's `channels_last_3d` memory format](https://docs.pytorch.org/docs/stable/generated/torch.nn.utils.convert_conv3d_weight_memory_format.html). This preserves dimensions and weight values while allowing different convolution kernels. Balanced loads the original VAE layout. No extra attention package or model download is required.
+
+Krea child processes default to `PYTORCH_ALLOC_CONF=expandable_segments:True` before Torch imports to reduce allocator fragmentation during changing chunk/decoder allocations. Either user-supplied allocator environment alias takes precedence. This does not increase VRAM or guarantee against OOM. Duplicate copies of the pinned INT8 cast warning are limited to the first occurrence per dtype; other warnings and errors remain visible.
+
 `krea_quant.py` preserves n-dimensional Linear behavior around bitsandbytes INT8 layers. Krea's output head supplies `[batch, frames, tokens, features]`, while [bitsandbytes 0.50.2 flattens only rank-3 inputs](https://github.com/bitsandbytes-foundation/bitsandbytes/blob/0.50.2/bitsandbytes/autograd/_functions.py). That combination can fail in the CUDA outlier calculation with `view size is not compatible`. The adapter flattens leading dimensions to rank 2 for rank-4/higher calls and restores the output shape. It preserves quantized weights, outlier thresholds and native lower-rank calls; installed bitsandbytes files and global Torch operations are not patched.
 
 For opt-in hardware verification, stop the GPU server first and run the existing isolated runtime's Python: `python check_krea_gpu.py --int8-only` exercises tiny CUDA INT8 linears without loading pretrained models. `python check_krea_gpu.py --output captures/krea-validation` also loads the cached full pipeline and checks the real FastAPI/WebSocket path, decoded 832 × 480 frames, prompt changes, pause and reset. It writes validation JPEGs and a JSON report to the specified output folder. These GPU checks are separate from CPU CI and require the Krea dependencies, staged models and an available Ampere+ GPU.
+
+For a matched speed comparison, run `python benchmark_krea.py --output captures/krea-benchmark` in the same stopped Krea runtime. One model load compares thresholds **6 → 0 → 6**, with the same prompt, seed, native resolution, four steps and server GPU tuning. Each variant generates four chunks; the first two are warmup. Reports include steady generated FPS, per-component CUDA timings, peak Torch memory and validation JPEGs. Use a new output directory for each run. It does not open a public listener, install dependencies or delete caches. The optional `--vae-formats` argument compares convolution layouts, one per threshold.
 
 Usually the first chunk decodes nine frames and later chunks twelve. GPU Inference displays the **whole chunk time**, not individual-frame latency. One decoded chunk is queued; ACK credits bound video delivery and gate further generation. Start with Fast video quality / Video Buffer 3 / the default HTTP/2 tunnel. Generation errors stop automatic retries until Reset. Pings/progress continue during generation; Pause waits for a running chunk to complete.
 
@@ -109,6 +117,18 @@ For `Failed to create component tokenizer`, `JSONDecodeError`, or `NoneType is n
 This is a short server-side validation on an already-used VM, with Fast quality, three-frame credits and immediate ACKs. One initial attempt failed at the next chunk; the retained repeat passed and logged allocator OOM retries, so 40 GB memory headroom is tight. **Fresh-VM/cold-compile reliability, long-session quality and sustained TouchDesigner FPS remain unverified.** These chunk timings are slower than real-time and exclude home-network delivery and TD cooking. Krea's published B200 result does not predict A100 performance.
 
 A subsequent normal server launch delivered visible motion to **TouchDesigner 2025.32820** through the HTTP/2 Cloudflare tunnel for **19 chunks**, then passed client Pause, Reset and resume (six further chunks checked). The independent network probe sampled roughly **127–145 ms**. Later sampled chunks took about **6.9–7.3 seconds for twelve frames**. The client can show a much higher FPS while a finished chunk arrives in a burst; that readout does not establish sustained generation speed. This short client check reused the same VM/cache and six-frame delivery window; it is not a long-session benchmark.
+
+**Matched optimization comparison (same A100, 2026-11-05):** one cached model load (198 seconds) compared INT8 thresholds **6 → 0 → 6** with identical prompt/seed, native 832 × 480, four steps, the server's TF32/cuDNN settings and expandable allocator segments. Four chunks per variant were generated; the first two were excluded from steady-state timing.
+
+| Setting | Steady generated FPS | Median 12-frame chunk |
+| --- | ---: | ---: |
+| Balanced, threshold 6 | 1.65 | 7.25 s |
+| Fast, threshold 0 | **2.09** | **5.73 s** |
+| Balanced repeat, threshold 6 | 1.71 | 7.01 s |
+
+Fast improved generation by **22–27%** against the two baselines. The transformer took about **4.91 s/chunk** in Fast versus **6.2 s** in Balanced; VAE decoding remained about **0.57 s**. Peak Torch allocated/reserved memory was **35.4 / 36.3 GiB** across variants. These are short server-side generated-FPS measurements, excluding network delivery, TD cooking and output-file writes. They do not promise 24 FPS or establish long-session quality. An earlier probe omitted the server's cuDNN settings and hit a later-chunk VAE OOM; its results are not used in this comparison.
+
+A second comparison held threshold 0 fixed and changed VAE convolution layout: decode time fell from about **568 → 526 ms**, with peak allocation **35.41 → 34.98 GiB**. Overall warmed generation remained approximately **2.1 FPS**; the transformer still dominates. This small decoder/memory improvement is included in Fast. Initial layout-specific kernel tuning can make the first chunk slower.
 
 ## Waypoint on Colab A100 40 GB (experimental)
 
@@ -526,6 +546,7 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `waypoint_backend.py` / `waypoint_setup.py` | Optional native-720p world-model adapter, bounded four-frame queue, pinned models, and isolated GPU environment |
 | `krea_backend.py` / `krea_assets.py` / `krea_weights.py` / `krea_setup.py` | Optional fixed-480p T2V adapter, pinned HF runtime, validated local weight staging/repair, bounded chunks and isolated INT8 environment |
 | `krea_quant.py` / `check_krea_gpu.py` | INT8 Linear input-shape adapter and opt-in tiny/full GPU validation using the existing Krea runtime |
+| `benchmark_krea.py` | Matched native-resolution GPU comparisons with component timings, memory and retained frame/report outputs |
 | `check_krea_imports.py` | Disposable pinned Krea imports, weight-manifest metadata and tiny staged-checkpoint loading checks; downloads no pretrained weights |
 
 ### Shared local TouchDesigner resources

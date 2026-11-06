@@ -1,7 +1,6 @@
 """Opt-in Krea GPU validation; reuses an existing isolated runtime/model cache."""
 import argparse
 import json
-import logging
 import os
 from pathlib import Path
 import time
@@ -53,6 +52,8 @@ def check_stream(root, output, report, timeout):
         health = client.get('/health').json()
         assert health['ready'] and health['backend'] == 'krea'
         report['load_seconds'] = round(time.perf_counter() - start, 3)
+        report['engine'] = health['engine']
+        report['int8_profile'] = server.krea_backend.int8_profile
         print('MODEL_READY ' + json.dumps({'load_seconds': report['load_seconds'], 'engine': health['engine']}), flush=True)
         with client.websocket_connect('/ws/stream') as ws:
             welcome = ws.receive_json()
@@ -132,6 +133,8 @@ def check_stream(root, output, report, timeout):
 
 
 def main():
+    from krea_quant import configure_allocator, limit_cast_warnings
+    configure_allocator(os.environ)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--int8-only', action='store_true', help='Small CUDA quantization check, without pretrained models')
     parser.add_argument('--output', type=Path, help='Keep validation JPEGs/report in this explicit output directory')
@@ -139,15 +142,7 @@ def main():
     arguments = parser.parse_args()
     if not arguments.int8_only and arguments.output is None:
         parser.error('--output is required for full model validation')
-    # Avoid thousands of identical cast notices while keeping all other warnings.
-    class CastOnce(logging.Filter):
-        seen = False
-        def filter(self, record):
-            if 'inputs will be cast' in record.getMessage():
-                previous, self.seen = self.seen, True
-                return not previous
-            return True
-    logging.getLogger('bitsandbytes.autograd._functions').addFilter(CastOnce())
+    limit_cast_warnings()
     report = check_int8()
     if not arguments.int8_only:
         output = arguments.output.resolve()
