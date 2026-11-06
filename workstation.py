@@ -384,6 +384,8 @@ def start(arguments):
         print(f'\n{backend} workstation is ready. In TouchDesigner select RTX Workstation.')
         print('Server WebSocket URL:', url)
         print('Workstation Access Token:', token)
+        print('For constrained links: Streaming > Video Transport = WebSocket images (JPEG / WebP);')
+        print('StreamDiffusion > Video Quality = Compact WebP (12 KB target), Video Buffer = 3.')
         if not tunnel:
             print('Use the workstation LAN/VPN IP if its hostname does not resolve; --advertise-host sets the printed address.')
         if backend == 'waypoint':

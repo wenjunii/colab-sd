@@ -130,6 +130,76 @@ class AuthenticatedStreamChecks(unittest.TestCase):
         self.state.start()
         self.addCleanup(self.state.stop)
 
+    def test_compact_and_jpeg_switch_on_paired_workstation_for_every_backend(self):
+        fixtures = [('sd-turbo', 'img2img', (1024, 768)), ('waypoint', 'world', (1280, 720)),
+                    ('krea', 'krea', (832, 480)), ('ltx', 'ltx', (1024, 576))]
+        for backend_name, mode, (width, height) in fixtures:
+            image = np.full((height, width, 3), (15, 80, 200), np.uint8)
+            image[height // 4:height // 2, width // 4:width // 2] = (210, 60, 5)
+            backend = SimpleNamespace(release_controls=Mock(), close=Mock(), can_generate=True, can_deliver=True,
+                                      needs_render=False, playback_fps=24, seed_image=True, num_frames=17)
+
+            def process(mode, frame_bytes=None, max_frame_bytes=None, raw_output=False, image_codec='jpeg'):
+                self.assertFalse(raw_output)
+                encode = server.compress_webp_frame if image_codec == 'webp' else server.compress_frame
+                return encode(image, max_frame_bytes, allow_oversize=True), 1, 2
+
+            def receive_frame(ws):
+                chunks = {}
+                for _ in range(100):
+                    message = ws.receive()
+                    if message.get('bytes'):
+                        data = message['bytes']
+                        chunks[data[1]] = data[3:]
+                        if len(chunks) == data[2]:
+                            return data[0], b''.join(chunks[index] for index in range(data[2]))
+                self.fail('No complete workstation frame received')
+
+            with self.subTest(backend=backend_name), patch.multiple(server,
+                    is_world_backend=backend_name == 'waypoint', is_krea_backend=backend_name == 'krea',
+                    is_ltx_backend=backend_name == 'ltx', backend_name=backend_name,
+                    current_mode=mode, output_width=width, output_height=height,
+                    active_client=None, ltx_backend=backend, world_backend=backend), \
+                    patch.object(server, 'stateful_backend', return_value=backend), \
+                    patch.object(server, 'world_progress', return_value={}), \
+                    patch.object(server, 'engine_for_mode', return_value='CPU fixture'), \
+                    patch.object(server, 'load_pipeline') as load, \
+                    patch.object(server, 'process_frame', side_effect=process), \
+                    patch.object(server, 'get_gpu_telemetry', return_value=('--', '--')), \
+                    TestClient(server.app) as client:
+                with client.websocket_connect('/ws/stream') as ws:
+                    self.assertEqual(ws.receive_json()['type'], 'auth_required')
+                    ws.send_json({'type': 'auth', 'token': self.token})
+                    welcome = ws.receive_json()
+                    self.assertIn('compact', welcome['video_quality_profiles'])
+                    self.assertIn('webp', welcome['image_codecs'])
+                    load.reset_mock()
+                    previous_frame = None
+                    for quality, codecs, expected in [('compact', ['jpeg', 'webp'], 'webp'),
+                                                     ('fast', ['jpeg'], 'jpeg'),
+                                                     ('compact', ['jpeg'], 'jpeg')]:
+                        ws.send_json({'type': 'client_options', 'frame_ack': True, 'frame_window': 1,
+                                      'video_transport': 'websocket', 'video_quality': quality,
+                                      'image_codecs': codecs})
+                        if previous_frame is not None:
+                            ws.send_json({'type': 'frame_ack', 'frame_id': previous_frame})
+                        if mode == 'img2img':
+                            ws.send_bytes(cv2.imencode('.jpg', image)[1].tobytes())
+                        frame_id, encoded = receive_frame(ws)
+                        self.assertEqual(encoded[8:12] == b'WEBP', expected == 'webp')
+                        decoded = cv2.imdecode(np.frombuffer(encoded, np.uint8), 1)
+                        self.assertEqual(decoded.shape, image.shape)
+                        np.testing.assert_allclose(decoded[10, 10], image[10, 10], atol=5)
+                        previous_frame = frame_id
+                    ws.send_json({'type': 'ping', 'sent_at': 321})
+                    for _ in range(100):
+                        message = ws.receive()
+                        if message.get('text') and json.loads(message['text']).get('type') == 'pong':
+                            break
+                    else:
+                        self.fail('Workstation controls stopped responding')
+                    load.assert_not_called()
+
     def test_unauthorized_clients_never_take_control_or_receive_video(self):
         with patch.object(server, 'load_pipeline'), patch.object(server, 'process_frame') as process, TestClient(server.app) as client:
             with client.websocket_connect('/ws/stream') as ws:
