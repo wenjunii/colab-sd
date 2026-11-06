@@ -52,7 +52,8 @@ class LTXChecks(unittest.TestCase):
                     patch.object(ltx_setup, 'require_unused_port'), \
                     patch.object(ltx_setup, 'ensure_source', return_value=root / 'source'), \
                     patch.object(ltx_setup, 'ensure_environment', return_value=(root / 'venv/bin/python', False)), \
-                    patch.object(ltx_setup.subprocess, 'run') as run, \
+                    patch.object(ltx_setup.subprocess, 'run',
+                                 return_value=subprocess.CompletedProcess([], 0, stdout='')) as run, \
                     patch.dict(os.environ, {'HF_TOKEN': 'test-only-placeholder'}):
                 ltx_setup.setup(root)
                 commands = [call.args[0] for call in run.call_args_list]
@@ -62,6 +63,27 @@ class LTXChecks(unittest.TestCase):
                 run.reset_mock()
                 ltx_setup.setup(root)
                 self.assertEqual(run.call_count, 2)  # pip check + import/GPU preflight; no reinstall
+
+    def test_failed_setup_shows_resolver_cause_without_recording_success_or_token(self):
+        with tempfile.TemporaryDirectory(prefix='colab-sd-ltx-failure-') as directory:
+            root = Path(directory).resolve()
+            failure = subprocess.CalledProcessError(1, ['pip'],
+                output='ERROR: incompatible safetensors pin\ncredential=test-only-placeholder\n')
+            with patch.object(ltx_setup.platform, 'system', return_value='Linux'), \
+                    patch.object(ltx_setup, 'require_unused_port'), \
+                    patch.object(ltx_setup, 'ensure_source', return_value=root / 'source'), \
+                    patch.object(ltx_setup, 'ensure_environment', return_value=(root / 'venv/bin/python', False)), \
+                    patch.object(ltx_setup.subprocess, 'run', side_effect=[
+                        subprocess.CompletedProcess([], 0, stdout='Torch already installed'), failure]) as run, \
+                    patch.dict(os.environ, {'HF_TOKEN': 'test-only-placeholder'}), \
+                    patch('sys.stdout', new_callable=io.StringIO) as output:
+                with self.assertRaisesRegex(RuntimeError, 'install runtime dependencies') as caught:
+                    ltx_setup.setup(root)
+                message = str(caught.exception)
+                self.assertIn('incompatible safetensors pin', message)
+                self.assertNotIn('test-only-placeholder', message + output.getvalue())
+                self.assertEqual(run.call_count, 2)
+                self.assertFalse((root / 'installed.json').exists())
 
     def test_control_validation_rejects_bad_patches_and_resolution_changes(self):
         for value in (None, [], {'mode': 'krea'}, {'seed': -1}, {'seed': True},

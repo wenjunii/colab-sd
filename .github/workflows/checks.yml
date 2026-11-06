@@ -6,6 +6,47 @@ concurrency:
   group: project-checks-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
+  ltx-dependencies:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Resolve LTX dependencies with CPU PyTorch wheels (no installation)
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          from ltx_setup import DEPENDENCIES, TORCH_PACKAGES
+
+          # Explicit CPU builds prevent the resolver from fetching CUDA packages.
+          # This validates Python 3.13/Linux dependencies, not GPU imports/inference.
+          cpu_packages = [pin + '+cpu' for pin in TORCH_PACKAGES]
+          with tempfile.TemporaryDirectory(prefix='colab-sd-ltx-resolve-') as directory:
+              scratch = Path(directory).resolve()
+              assert scratch.parent == Path(tempfile.gettempdir()).resolve()
+              environment = {k: v for k, v in os.environ.items() if not k.startswith('PIP_')}
+              environment.update(PIP_CONFIG_FILE=os.devnull, TMP=str(scratch), TEMP=str(scratch),
+                                 TMPDIR=str(scratch), PYTHONDONTWRITEBYTECODE='1')
+              report = scratch / 'report.json'
+              subprocess.run([sys.executable, '-m', 'pip', 'install', '--dry-run',
+                  '--ignore-installed', '--only-binary=:all:', '--no-cache-dir',
+                  '--index-url', 'https://pypi.org/simple',
+                  '--extra-index-url', 'https://download.pytorch.org/whl/cpu',
+                  '--report', str(report), *cpu_packages, *DEPENDENCIES], env=environment, check=True)
+              resolved = {item['metadata']['name'].lower().replace('_', '-'): item['metadata']['version']
+                          for item in json.loads(report.read_text())['install']}
+              assert all(resolved[name].endswith('+cpu') for name in ('torch', 'torchvision', 'torchaudio'))
+              assert not any(name.startswith('nvidia-') for name in resolved)
+          print('LTX dependency resolution passed on Python 3.13/Linux; disposable metadata removed.')
+          PY
   waypoint-bootstrap:
     runs-on: ubuntu-latest
     env:
