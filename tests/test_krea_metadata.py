@@ -157,19 +157,19 @@ class ReadinessChecks(unittest.TestCase):
                 server.load_pipeline()
             self.assertFalse(server.pipeline_ready)
 
-    def test_no_symlink_flags_apply_only_to_krea_child(self):
+    def test_no_symlink_flags_and_allocator_are_isolated_to_clip_backend_children(self):
         with tempfile.TemporaryDirectory(prefix='colab-sd-krea-launch-') as directory:
             with patch.dict(os.environ, {'HF_HUB_DISABLE_SYMLINKS': '0', 'HF_HUB_DISABLE_SHARED_BLOBS': '0'}, clear=True):
-                for selection in ('krea', 'sd-turbo'):
+                for selection in ('krea', 'sd-turbo', 'ltx'):
                     session = colab_launcher.BridgeSession(root=directory, backend=selection, tunnel=False)
                     with patch.object(colab_launcher.socket, 'create_connection', side_effect=ConnectionRefusedError), \
                             patch.object(session, '_spawn') as spawn, patch.object(session, 'wait_for_ready'):
                         session.start()
                     environment = spawn.call_args.args[2]
-                    self.assertEqual(environment['HF_HUB_DISABLE_SYMLINKS'], '1' if selection == 'krea' else '0')
-                    self.assertEqual(environment['HF_HUB_DISABLE_SHARED_BLOBS'], '1' if selection == 'krea' else '0')
+                    self.assertEqual(environment['HF_HUB_DISABLE_SYMLINKS'], '1' if selection in ('krea', 'ltx') else '0')
+                    self.assertEqual(environment['HF_HUB_DISABLE_SHARED_BLOBS'], '1' if selection in ('krea', 'ltx') else '0')
                     self.assertEqual(os.environ['HF_HUB_DISABLE_SYMLINKS'], '0')
-                    if selection == 'krea':
+                    if selection in ('krea', 'ltx'):
                         self.assertEqual(environment['PYTORCH_ALLOC_CONF'], 'expandable_segments:True')
                     else:
                         self.assertNotIn('PYTORCH_ALLOC_CONF', environment)
