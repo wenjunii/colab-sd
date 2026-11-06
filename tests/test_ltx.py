@@ -135,10 +135,13 @@ class LTXChecks(unittest.TestCase):
             self.assertEqual(backend.progress()['world_phase'], 'error')
 
     def test_startup_size_and_launcher_identity(self):
+        with patch.dict(os.environ, clear=True):
+            self.assertEqual(startup_size(), (1024, 576))
         with patch.dict(os.environ, {'BRIDGE_INITIAL_WIDTH': '768', 'BRIDGE_INITIAL_HEIGHT': '512'}):
             self.assertEqual(startup_size(), (768, 512))
-        session = colab_launcher.BridgeSession(backend='ltx', output_size=(768, 512))
-        self.assertEqual(session.output_size, (768, 512))
+        for size in ((768, 512), (1024, 576)):
+            session = colab_launcher.BridgeSession(backend='ltx', output_size=size)
+            self.assertEqual(session.output_size, size)
         with self.assertRaises(ValueError):
             colab_launcher.BridgeSession(backend='ltx', tensorrt=True)
         with self.assertRaises(ValueError):
@@ -146,11 +149,11 @@ class LTXChecks(unittest.TestCase):
         result = subprocess.run([sys.executable, '-B', '-c',
             'import colab_server as s; print(s.health().body.decode())'], cwd=notebook.PROJECT_DIR,
             env={**os.environ, 'BRIDGE_BACKEND': 'ltx', 'ENABLE_TENSORRT': '0',
-                 'BRIDGE_INITIAL_WIDTH': '768', 'BRIDGE_INITIAL_HEIGHT': '512'},
+                 'BRIDGE_INITIAL_WIDTH': '1024', 'BRIDGE_INITIAL_HEIGHT': '576'},
             capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         health = json.loads(result.stdout)
-        self.assertEqual((health['backend'], health['mode'], health['width'], health['height']), ('ltx', 'ltx', 768, 512))
+        self.assertEqual((health['backend'], health['mode'], health['width'], health['height']), ('ltx', 'ltx', 1024, 576))
         self.assertFalse(health['ready'])
         self.assertTrue(health['resolution_locked'])
 
@@ -164,12 +167,13 @@ class LTXChecks(unittest.TestCase):
         namespace = {'parent': lambda: component, 'op': lambda name: ws if name == 'websocket1' else None}
         exec(builder.WEBSOCKET_CODE, namespace)
         namespace['onReceiveText'](ws, 0, json.dumps({'type': 'welcome', 'ready': True, 'protocol': 1,
-            'backend': 'ltx', 'supported_modes': ['ltx'], 'mode': 'ltx', 'width': 512, 'height': 512,
+            'backend': 'ltx', 'supported_modes': ['ltx'], 'mode': 'ltx', 'width': 1024, 'height': 576,
             'resolution_locked': True, 'ltx_clip': 0}))
         self.assertEqual(pars.Mode.val, 'ltx')
         namespace['send_control'](ltx_generate=True)
         self.assertEqual(set(messages[-1]), {'type', 'mode', 'width', 'height', 'prompt_a', 'seed', 'ltx_paused', 'ltx_generate'})
         self.assertTrue(messages[-1]['ltx_generate'])
+        self.assertEqual((messages[-1]['width'], messages[-1]['height']), (1024, 576))
         self.assertIn('Clip 0', pars.Ltxinfo.val)
 
     def test_notebook_embeds_current_sources_and_cells_compile(self):
