@@ -47,6 +47,56 @@ jobs:
               assert not any(name.startswith('nvidia-') for name in resolved)
           print('LTX dependency resolution passed on Python 3.13/Linux; disposable metadata removed.')
           PY
+      - name: Build and smoke-import pinned LTX packages without CUDA
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          from ltx_assets import ensure_source
+          from ltx_setup import DEPENDENCIES, TORCH_PACKAGES, setup_environment
+
+          build_tool = next(pin for pin in DEPENDENCIES if pin.startswith('uv-build=='))
+          subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--no-deps',
+                          '--index-url', 'https://pypi.org/simple', build_tool], check=True)
+          # Reproduce a notebook that invokes a venv Python without activating it.
+          # The installer must expose its scripts directory in the child only.
+          os.environ['PATH'] = os.defpath
+          environment = setup_environment(sys.executable)
+          assert os.environ['PATH'] == os.defpath
+          with tempfile.TemporaryDirectory(prefix='colab-sd-ltx-build-') as directory:
+              scratch = Path(directory).resolve()
+              assert scratch.parent == Path(tempfile.gettempdir()).resolve()
+              environment.update(TMP=str(scratch), TEMP=str(scratch), TMPDIR=str(scratch))
+              source = ensure_source(scratch)
+              wheels = scratch / 'wheels'
+              subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps', '--no-build-isolation',
+                  '--no-cache-dir', '--wheel-dir', str(wheels),
+                  str(source / 'packages/ltx-core'), str(source / 'packages/ltx-pipelines')],
+                  env=environment, check=True)
+              assert sorted(path.name for path in wheels.glob('*.whl')) == [
+                  'ltx_core-1.6.1-py3-none-any.whl', 'ltx_pipelines-1.6.1-py3-none-any.whl']
+              # Exercise the next setup stage too, using the same dependency pins
+              # with explicit CPU Torch binaries in this existing CI Python.
+              cpu_packages = [pin + '+cpu' for pin in TORCH_PACKAGES]
+              subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir',
+                  '--index-url', 'https://pypi.org/simple',
+                  '--extra-index-url', 'https://download.pytorch.org/whl/cpu',
+                  *cpu_packages, *DEPENDENCIES], env=environment, check=True)
+              subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps',
+                  *map(str, wheels.glob('*.whl'))], env=environment, check=True)
+              subprocess.run([sys.executable, '-m', 'pip', 'check'], env=environment, check=True)
+              environment.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
+              subprocess.run([sys.executable, '-B', '-c',
+                  'import torch; from ltx_pipelines import DistilledPipeline; '
+                  'from ltx_core.quantization.fp8_cast import build_policy; '
+                  'assert not torch.cuda.is_available(); '
+                  'print("Pinned LTX pipeline and FP8 policy imported on CPU")'],
+                  env=environment, check=True)
+          print('Both pinned LTX wheels built/imported; disposable source/build files removed. No GPU packages or models installed.')
+          PY
   waypoint-bootstrap:
     runs-on: ubuntu-latest
     env:
