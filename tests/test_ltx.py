@@ -59,10 +59,32 @@ class LTXChecks(unittest.TestCase):
                 commands = [call.args[0] for call in run.call_args_list]
                 self.assertIn(ltx_setup.TORCH_INDEX, commands[0])
                 self.assertIn('--no-deps', commands[2])
+                for call in run.call_args_list:
+                    self.assertEqual(call.kwargs['env']['PATH'].split(os.pathsep)[0], str(root / 'venv/bin'))
                 self.assertNotIn('test-only-placeholder', (root / 'installed.json').read_text())
                 run.reset_mock()
                 ltx_setup.setup(root)
                 self.assertEqual(run.call_count, 2)  # pip check + import/GPU preflight; no reinstall
+
+    def test_child_finds_venv_build_tool_without_changing_parent_path(self):
+        with tempfile.TemporaryDirectory(prefix='colab-sd-ltx-path-') as directory:
+            root = Path(directory).resolve()
+            scripts, other_scripts = root / 'venv/bin', root / 'other-bin'
+            scripts.mkdir(parents=True)
+            other_scripts.mkdir()
+            tool_name = 'ltx-build-tool.cmd' if os.name == 'nt' else 'ltx-build-tool'
+            for folder in (scripts, other_scripts):
+                tool = folder / tool_name
+                tool.write_text('fixture only', encoding='utf-8')
+                tool.chmod(0o755)
+            with patch.dict(os.environ, {'PATH': str(other_scripts), 'PIP_INDEX_URL': 'untrusted-fixture'}):
+                environment = ltx_setup.setup_environment(scripts / 'python')
+                result = subprocess.run([sys.executable, '-B', '-c',
+                    'import shutil, sys; print(shutil.which(sys.argv[1]))', tool_name],
+                    env=environment, capture_output=True, text=True, check=True, timeout=15)
+                self.assertEqual(Path(result.stdout.strip()), scripts / tool_name)
+                self.assertEqual(os.environ['PATH'], str(other_scripts))
+                self.assertNotIn('PIP_INDEX_URL', environment)
 
     def test_failed_setup_shows_resolver_cause_without_recording_success_or_token(self):
         with tempfile.TemporaryDirectory(prefix='colab-sd-ltx-failure-') as directory:

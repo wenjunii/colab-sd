@@ -21,6 +21,16 @@ DEPENDENCIES = ('transformers==5.14.1', 'huggingface-hub==1.33.0', 'accelerate==
                 'opencv-python-headless==4.13.0.92')
 
 
+def setup_environment(python):
+    environment = {k: v for k, v in os.environ.items() if not k.startswith('PIP_')}
+    environment.update(PIP_CONFIG_FILE=os.devnull, PYTHONDONTWRITEBYTECODE='1')
+    # Using the venv interpreter alone does not expose its installed build tools.
+    # Keep the venv's bin path even when its Python executable is a symlink.
+    scripts = str(Path(python).absolute().parent)
+    environment['PATH'] = os.pathsep.join(filter(None, (scripts, environment.get('PATH', os.defpath))))
+    return environment
+
+
 def _run_stage(stage, command, environment, cwd=None):
     print(f'LTX setup: {stage}...', flush=True)
 
@@ -58,8 +68,7 @@ def setup(root):
                  'torch': list(TORCH_PACKAGES), 'dependencies': list(DEPENDENCIES)}
     marker = root / 'installed.json'
     reusable = not repaired and marker.is_file() and json.loads(marker.read_text()) == signature
-    environment = {k: v for k, v in os.environ.items() if not k.startswith('PIP_')}
-    environment.update(PIP_CONFIG_FILE=os.devnull, PYTHONDONTWRITEBYTECODE='1')
+    environment = setup_environment(python)
     if not reusable:
         _run_stage('install CUDA PyTorch packages', [str(python), '-m', 'pip', 'install', '--no-cache-dir',
                         '--index-url', TORCH_INDEX, *TORCH_PACKAGES], environment)
