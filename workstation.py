@@ -213,7 +213,7 @@ def modern_revisions(backend):
 def modern_signature(backend):
     signature = modern_installer(backend).installation_signature()
     # Runtime identity is independent of the lightweight launcher's Python.
-    # LTX's pinned PyAV 19 requires >=3.12; use Colab's verified Python 3.13.
+    # Retain the Colab/CI Python 3.13 baseline for the supported LTX setup.
     signature['python'] = [3, 13] if backend == 'ltx' else [3, 11]
     return signature
 
