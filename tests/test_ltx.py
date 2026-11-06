@@ -160,6 +160,19 @@ class LTXChecks(unittest.TestCase):
         self.assertFalse(backend.progress()['ltx_prompt_pending'])
         backend.release_controls()
 
+    def test_continuous_off_drops_lookahead_without_carrying_an_unseen_scene(self):
+        backend = fake_backend()
+        backend.pipe.side_effect = lambda **kw: SimpleNamespace(
+            video=iter([np.full((17, 512, 512, 3), kw['seed'], dtype=np.uint8)]))
+        backend.configure({'prompt_a': 'forest', 'ltx_continuous': True, 'ltx_generate': True})
+        backend.render_next_clip()
+        backend.render_next_clip()
+        self.assertEqual(int(backend._last_rgb[0, 0, 0]), 43)
+        backend.configure({'ltx_continuous': False})
+        self.assertEqual(backend.progress()['ltx_queued_frames'], 17)
+        self.assertEqual(int(backend._last_rgb[0, 0, 0]), 42)
+        backend.release_controls()
+
     def test_quality_refresh_breaks_recursive_feedback_without_dropping_seed_or_prompt(self):
         with tempfile.TemporaryDirectory(prefix='colab-sd-ltx-refresh-') as directory:
             backend = fake_backend()

@@ -163,6 +163,10 @@ class LTXBackend:
             self.prompt, self.seed = clean.get('prompt_a', self.prompt), clean.get('seed', self.seed)
             self.paused = clean.get('ltx_paused', self.paused)
             if self.continuous and clean.get('ltx_continuous') is False:
+                if self._prefetched:
+                    # Resume from the ending image of playback, rather than an
+                    # unseen lookahead clip that the user just discarded.
+                    self._last_rgb = self.frames[-1].copy() if self.frames else None
                 self._prefetched.clear()
             self.continuous = clean.get('ltx_continuous', self.continuous)
             self.continue_scene = clean.get('ltx_continue_scene', self.continue_scene)
