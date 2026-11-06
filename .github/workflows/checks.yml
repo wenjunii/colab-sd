@@ -6,6 +6,75 @@ concurrency:
   group: project-checks-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
+  workstation-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: krea
+            python: '3.11'
+          - backend: ltx
+            python: '3.13'
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      BACKEND: ${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Import the pinned workstation stack on Windows with CPU wheels only
+        run: |
+          python - <<'PY'
+          import importlib
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          from ltx_setup import setup_environment
+
+          backend = os.environ['BACKEND']
+          installer = importlib.import_module(backend + '_setup')
+          torch_packages = list(installer.TORCH_PACKAGES) if backend == 'ltx' else [installer.TORCH]
+          environment = setup_environment(sys.executable)
+          subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir',
+              '--index-url', 'https://download.pytorch.org/whl/cpu',
+              *[pin + '+cpu' for pin in torch_packages]], env=environment, check=True)
+          subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir',
+              '--index-url', 'https://pypi.org/simple', *installer.DEPENDENCIES], env=environment, check=True)
+          if backend == 'ltx':
+              from ltx_assets import ensure_source
+              os.environ['PATH'] = os.defpath
+              environment = setup_environment(sys.executable)
+              with tempfile.TemporaryDirectory(prefix='colab-sd-win-ltx-') as directory:
+                  scratch = Path(directory).resolve()
+                  assert scratch.parent == Path(tempfile.gettempdir()).resolve()
+                  environment.update(TMP=str(scratch), TEMP=str(scratch), TMPDIR=str(scratch))
+                  source = ensure_source(scratch)
+                  wheels = scratch / 'wheels'
+                  subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps', '--no-build-isolation',
+                      '--no-cache-dir', '--wheel-dir', str(wheels), str(source / 'packages/ltx-core'),
+                      str(source / 'packages/ltx-pipelines')], env=environment, check=True)
+                  subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps',
+                                  *map(str, wheels.glob('*.whl'))], env=environment, check=True)
+                  subprocess.run([sys.executable, '-c', 'import torch, OpenImageIO; '
+                      'from ltx_pipelines import DistilledPipeline; '
+                      'from ltx_core.quantization.fp8_cast import build_policy; '
+                      'assert not torch.cuda.is_available() and torch.version.cuda is None; '
+                      'print("Pinned Windows LTX imports passed on CPU")'], env=environment, check=True)
+          else:
+              subprocess.run([sys.executable, '-B', 'check_krea_imports.py'], env=environment, check=True)
+              subprocess.run([sys.executable, '-c', 'import torch, bitsandbytes; '
+                  'assert not torch.cuda.is_available() and torch.version.cuda is None; '
+                  'print("Windows Krea INT8 library imported on CPU")'], env=environment, check=True)
+          subprocess.run([sys.executable, '-m', 'pip', 'check'], env=environment, check=True)
+          print('Windows pinned-stack checks passed; disposable source/fixture scratch removed. No models or CUDA installed.')
+          PY
   ltx-dependencies:
     runs-on: ubuntu-latest
     env:

@@ -10,7 +10,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from bridge_protocol import resolution
+from bridge_protocol import resolution, LTX_OUTPUT_RESOLUTIONS
 
 TUNNEL_PROTOCOLS = ('auto', 'http2', 'quic')
 
@@ -57,8 +57,7 @@ class BridgeSession:
         self.access_token = access_token
         self.session_id = os.urandom(16).hex()
         if backend == 'ltx':
-            from ltx_backend import SIZES
-            if tuple(output_size) not in SIZES:
+            if tuple(output_size) not in LTX_OUTPUT_RESOLUTIONS:
                 raise ValueError('Choose an LTX startup resolution preset')
         self.output_size = ((1280, 720) if backend == 'waypoint' else (832, 480) if backend == 'krea'
                             else tuple(output_size) if backend == 'ltx'

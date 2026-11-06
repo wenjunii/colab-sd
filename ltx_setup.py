@@ -1,4 +1,4 @@
-"""Separate Linux CUDA environment for the pinned Apache LTX inference packages."""
+"""Separate Windows/Linux CUDA environment for the pinned Apache LTX packages."""
 import json
 import os
 from pathlib import Path
@@ -27,8 +27,16 @@ def setup_environment(python):
     # Using the venv interpreter alone does not expose its installed build tools.
     # Keep the venv's bin path even when its Python executable is a symlink.
     scripts = str(Path(python).absolute().parent)
-    environment['PATH'] = os.pathsep.join(filter(None, (scripts, environment.get('PATH', os.defpath))))
+    paths = [scripts]
+    if platform.system() == 'Windows' and Path(scripts).name.lower() != 'scripts':
+        paths.append(str(Path(scripts) / 'Scripts'))
+    environment['PATH'] = os.pathsep.join(filter(None, (*paths, environment.get('PATH', os.defpath))))
     return environment
+
+
+def installation_signature():
+    return {'python': list(sys.version_info[:2]), 'code': CODE_REVISION, 'sha256': CODE_SHA256,
+            'torch': list(TORCH_PACKAGES), 'dependencies': list(DEPENDENCIES)}
 
 
 def _run_stage(stage, command, environment, cwd=None):
@@ -56,16 +64,16 @@ def _run_stage(stage, command, environment, cwd=None):
         print(redact(result.stdout), flush=True)
 
 
-def setup(root):
-    if platform.system() != 'Linux' or platform.machine().lower() not in ('x86_64', 'amd64'):
-        raise RuntimeError('This LTX installer targets x86-64 Linux/Colab')
-    require_unused_port()
+def setup(root, install_tunnel=True, project_dir=None, check_port=True):
+    if platform.system() not in ('Linux', 'Windows') or platform.machine().lower() not in ('x86_64', 'amd64'):
+        raise RuntimeError('This LTX installer supports x86-64 Linux and Windows CUDA hosts')
+    if check_port:
+        require_unused_port()
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     source = ensure_source(root)
     python, repaired = ensure_environment(root / 'venv', label='LTX-2.5')
-    signature = {'python': list(sys.version_info[:2]), 'code': CODE_REVISION, 'sha256': CODE_SHA256,
-                 'torch': list(TORCH_PACKAGES), 'dependencies': list(DEPENDENCIES)}
+    signature = installation_signature()
     marker = root / 'installed.json'
     reusable = not repaired and marker.is_file() and json.loads(marker.read_text()) == signature
     environment = setup_environment(python)
@@ -81,14 +89,16 @@ def setup(root):
     _run_stage('check GPU and LTX imports', [str(python), '-c', 'from ltx_backend import gpu_preflight; '
                     'from ltx_pipelines import DistilledPipeline; '
                     'from ltx_core.quantization.fp8_cast import build_policy; '
-                    'print(gpu_preflight(), flush=True)'], environment, cwd=root)
+                    'print(gpu_preflight(), flush=True)'], environment, cwd=project_dir or root)
     marker.write_text(json.dumps(signature, indent=2) + '\n', encoding='utf-8')
-    binary = root / 'cloudflared'
+    if not install_tunnel:
+        return python, None
+    binary = root / ('cloudflared.exe' if platform.system() == 'Windows' else 'cloudflared')
     if not binary.exists():
         partial = root / 'cloudflared.download'
         try:
-            urllib.request.urlretrieve('https://github.com/cloudflare/cloudflared/releases/latest/download/'
-                                       'cloudflared-linux-amd64', partial)
+            asset = 'cloudflared-windows-amd64.exe' if platform.system() == 'Windows' else 'cloudflared-linux-amd64'
+            urllib.request.urlretrieve('https://github.com/cloudflare/cloudflared/releases/latest/download/' + asset, partial)
             partial.replace(binary)
         finally:
             partial.unlink(missing_ok=True)

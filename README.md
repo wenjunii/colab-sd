@@ -21,7 +21,7 @@ Real-time generative AI pipeline bridging **[StreamDiffusion](https://github.com
   * **Image-to-Image / Video-to-Video (`img2img`):** Real-time interactive stylization driven by TouchDesigner TOPs (external generators like `Noise TOP`, live webcam feed, or movie files).
   * **World Model (`world`, optional Waypoint notebook):** Image-seeded, controller-driven video at native **1280 × 720**. Separate runtime and weights; no Scope dependency. See the setup below.
   * **Krea Realtime (`krea`, experimental notebook):** Prompt A drives temporal video at **832 × 480**, with Pause/Reset controls. Uses the Apache-declared HF modular release; basic A100 40 GB INT8 generation is verified, but measured generation is slower than real-time.
-  * **LTX-2.5 (`ltx`, experimental notebook):** Explicit Generate Clip requests, Prompt A/Seed, and optional startup image conditioning. Targets Colab A100 40 GB with offloading; GPU inference/performance remains unverified. See its separate model-license conditions below.
+  * **LTX-2.5 (`ltx`, experimental):** Prompt A/Seed, image conditioning, steady slower playback with render-ahead, and configurable scene refresh on Colab or a high-VRAM workstation. A100 measurements are recorded below; workstation GPU performance needs its own validation. See its separate model-license conditions below.
 * **Output Resolution / Ratio:** SD-Turbo supports 16 square, landscape, and portrait presets, up to **1024 × 768** or **768 × 1024**. **512 × 512** remains the default. Waypoint locks **1280 × 720 (Waypoint only)**; the Krea trial locks **832 × 480 (Krea only)**. This changes actual server generation dimensions, rather than resizing the received image.
 * **Video Quality:** Compress network video independently of generation resolution. Fast targets 48 KB/frame, Balanced 64 KB, and Detail retains the larger resolution-based budget. Changing this control takes effect without a model or TensorRT rebuild.
 * **Dual-Prompt Latent Morphing:** Crossfade between **Prompt A** and **Prompt B** using **Prompt Blend** ($0.0 \dots 1.0$). A bounded embedding cache avoids re-running CLIP for blend, seed, and repeated control updates. Strength schedule changes still require preparation.
@@ -291,7 +291,18 @@ The cache settings cover both modern Hugging Face Hub and the project's legacy D
 
 ### 1B. Run on an RTX workstation instead of Colab
 
-Install **Git**, **Python 3.11**, and a current **NVIDIA driver** on the workstation. TouchDesigner can stay on another computer. The workstation needs internet access for the initial Python/model downloads. A separately installed CUDA toolkit alone does not establish compatibility: the NVIDIA driver must support the selected [PyTorch CUDA wheel](https://pytorch.org/get-started/locally/).
+All four backends use the same `colab_server.py`, protocol, compression, ACK windows, ping probe and TouchDesigner component as Colab. Updating this repository applies shared server fixes at the next workstation launch. Each backend has its own environment and persistent caches:
+
+| Backend flag | Environment | Default output | Same Colab behavior |
+| --- | --- | --- | --- |
+| `sd-turbo` | `.workstation/venv` | 512 × 512 | SD-Turbo / `--model sdxl-turbo`, prompts/blend, denoise, all output presets, TensorRT cache and delivery controls |
+| `waypoint` (World) | `.workstation-waypoint/venv` | 1280 × 720 | Movement, Pause/Reset, input-image seeds, optional SD/SDXL prompt seeds, automatic reseed switch/interval, compiler profiles |
+| `krea` | `.workstation-krea/venv` | 832 × 480 | Fast/balanced INT8, bounded temporal chunks, prompt updates, Pause/Reset, VAE layout and allocator optimizations |
+| `ltx` | `.workstation-ltx/venv` | 1024 × 576 | Two-clip lookahead, sustainable playback pacing, prompt invalidation, cached embeddings/resident weights, lossless conditioning and scene refresh |
+
+Krea/LTX currently require **Ampere+ and a 40 GB+ GPU with 30 GiB free VRAM**; a 16/24/32 GB consumer RTX does not meet this adapter's preflight. A compatible 48 GB or larger RTX workstation is a target, but GPU inference/FPS on that hardware is not established by the A100 measurements. No automatic lower-memory model conversion is provided.
+
+Install **Git**, **Python 3.11** for StreamDiffusion/Waypoint/Krea (**Python 3.13 for LTX**), and a current **NVIDIA driver** on the workstation. TouchDesigner can stay on another computer. The workstation needs internet access for the initial Python/model downloads. A separately installed CUDA toolkit alone does not establish compatibility: the NVIDIA driver must support the selected [PyTorch CUDA wheel](https://pytorch.org/get-started/locally/).
 
 Windows PowerShell:
 
@@ -386,6 +397,46 @@ In TD choose **World Seed Source = Prompt Model (A/B)**. **Auto Reseed** default
 Commercial-use terms remain component-specific: Waypoint weights declare Apache-2.0, WorldEngine is GPL-3.0 and TAEHV weights are MIT. Optional **SD-Turbo / SDXL-Turbo** are separate models under [Stability AI's licensing terms](https://stability.ai/license). The bridge's MIT license does not grant additional model rights. Input-image Waypoint mode does not load either prompt-seed generator.
 
 Workstation mode currently uses the same legacy StreamDiffusion model dependency pins as Colab. Its separate environment and access token do not patch those dependencies; the remaining migration is described in [SECURITY.md](SECURITY.md).
+
+#### Krea on the workstation (Windows / Linux, experimental)
+
+```powershell
+py -3.11 workstation.py setup --backend krea
+py -3.11 workstation.py start --backend krea --advertise-host 192.168.1.50
+```
+
+Use `python3.11` instead of `py -3.11` on Linux. This installs the same pinned **Torch 2.13.0 / cu130**, modern Diffusers and **bitsandbytes 0.50.2** environment as Colab. The [official bitsandbytes package supports Windows and Linux CUDA](https://huggingface.co/docs/bitsandbytes/v0.50.2/en/installation); this does not establish full Krea GPU correctness on a particular workstation. It uses the exact Apache-declared Hugging Face application/model distributions documented in the Krea section, never the noncommercial GitHub server.
+
+`--int8-profile fast` is the default; `--int8-profile balanced` restores the outlier path / original VAE layout. `--clip-blocks 1` through `64` select the bounded clip length (64 default). Resolution is fixed to **832 × 480**. The TD handshake chooses Krea; Prompt A / Submit Prompts and **Krea → Pause / Reset** work as on Colab. `--transport cloudflare` uses the same HTTP/2 default when LAN/VPN is unavailable.
+
+#### LTX-2.5 on the workstation (Windows / Linux, experimental)
+
+```powershell
+py -3.13 workstation.py setup --backend ltx
+py -3.13 workstation.py start --backend ltx --resolution 768x512 --advertise-host 192.168.1.50
+```
+
+Use `python3.13` on Linux. LTX requires Python **3.13**, matching Colab; its pinned PyAV 19 does not support Python 3.11. The separate runtime pins **Torch 2.11.0 / cu130**, Transformers 5.14.1 and the same hash-verified LTX source and split weights as Colab. Existing Hugging Face login credentials or an `HF_TOKEN` in the workstation shell supply model access; the account must have accepted the model terms. For a one-time login after setup, run `.\.workstation-ltx\venv\Scripts\hf.exe auth login` on Windows or `.workstation-ltx/venv/bin/hf auth login` on Linux. Keep credentials out of source and Git. Cache options do not relocate the login/token path. Application and model-weight licenses remain separate, as documented in the LTX section.
+
+Defaults match Colab: **1024 × 576 / 33 frames / resident / continuous On / Continue Scene On / Scene Refresh 4**. Select `--resolution 512x512`, `768x512`, `1024x576` or `1024x768`; `--clip-frames 17`, `33`, `65` or `121`; `--performance-profile resident` or `low_memory`; and optional `--input-image PATH`. `--no-continuous`, `--no-continue-scene` and `--refresh-every 0` disable the corresponding defaults for that launch. The supported refresh range is 0–32 clips. LTX has no StreamDiffusion TensorRT option.
+
+In TD, pulse **LTX → Generate or Restart** once. Continuous playback buffers two clips and then slows to sustainable generation speed while rendering one clip ahead. Prompt edits discard old queued/in-flight scenes; text/model loading can still take minutes. **Pause LTX**, **Continue Scene**, **Scene Refresh (0=Off)** and the playback/generation readouts work live. Scene refresh can cause a cut and does not guarantee indefinite visual stability. The shared limits and measured Colab results above apply to their recorded hardware; workstation FPS, memory and image quality need a separate GPU run.
+
+#### Storage, pairing and checks for all four backends
+
+`setup --model-cache PATH` saves a persistent model-cache selection; `start --model-cache PATH` overrides it for that launch only. New installs default to `RUNTIME/models`. Older StreamDiffusion installations without a saved selection continue using their existing Hub cache until explicitly overridden, avoiding an automatic redownload. The cache folder stays separate from Hugging Face authentication. Model weights and validated local staging remain in place across restarts; a new path does not automatically copy an old cache. Krea/LTX stage their pinned files under `RUNTIME/model-files`; allow space for both the Hub copy and validated staging (LTX needs about 72 GB for each).
+
+Pairing keys persist in **each backend's** `RUNTIME/access-token`. Select **RTX Workstation** in TD and paste the printed URL and that runtime's key. LAN/VPN remains the default; Cloudflare downloads on demand only when requested. The launcher does not alter firewall settings or stop an unrelated process on the selected port. A managed installation marker prevents one backend's setup from overwriting another environment. Re-run the matching setup when its dependency/source pins change. Keep backend environments, caches and keys out of Git; they are not disposable cleanup targets.
+
+CPU tests exercise all four launch routes, option validation, backend isolation, authenticated ASGI video and child-only cache settings. Windows CI builds/imports the exact LTX stack and imports the pinned Krea code/INT8 library with **CPU-only Torch**, without model weights. Linux CPU/source checks also remain enabled. These are dependency/import and protocol checks; **Krea/LTX GPU generation on Windows/Linux RTX workstations remains unverified**. The current development laptop's RTX 3080 Ti has 16 GB VRAM, so no Krea/LTX GPU environment or model download was created on it.
+
+For an authenticated LTX delivery probe, disconnect TD and run the probe using its existing isolated environment:
+
+```powershell
+.\.workstation-ltx\venv\Scripts\python.exe check_ltx_stream.py --output captures/ltx-workstation --token-file .workstation-ltx/access-token
+```
+
+On Linux use `.workstation-ltx/venv/bin/python`. Add `--url ws://WORKSTATION:PORT/ws/stream` or the printed `wss://.../ws/stream` to measure a different address/transport. The token is read from the file, never embedded in the URL or printed. It temporarily uses the single controller, changes between two test prompts, and preserves sample JPEGs/timing JSON; reconnect TD and Generate afterward. `check_ltx_gpu.py` separately benchmarks native clips with the server stopped. Reuse each backend's environment; these probes do not install packages or download another copy of the model.
 
 ### 2. Connect TouchDesigner
 
@@ -576,13 +627,13 @@ Run `python build_clean_toe.py` from any folder. It locates TouchDesigner automa
 | `bridge_protocol.py` | Shared output presets, control validation, and input frame assembly |
 | `colab_server.py` | Model loading, recovery, generation, health, and WebSocket streaming |
 | `colab_setup.py` / `colab_launcher.py` | Colab environment setup and owned server/tunnel lifecycle |
-| `workstation.py` | Separate SD-Turbo / Waypoint Windows/Linux CUDA environments, persistent caches, pairing and LAN/VPN/Cloudflare launch |
+| `workstation.py` | Separate StreamDiffusion / Waypoint / Krea / LTX Windows/Linux CUDA environments, persistent caches, pairing and LAN/VPN/Cloudflare launch |
 | `tensorrt_backend.py` | Matching TensorRT dependencies, compilation, validated immutable deployment archives, and per-profile builder timing caches |
 | `build_clean_toe.py` | TouchDesigner parameters, embedded callbacks, and native archive packaging |
 | `sdxl_stream.py` / `check_sdxl_stream.py` | SDXL pooled/size conditioning adapter; disposable CPU execution checks for the pinned stream core and modern Waypoint seed pipeline |
 | `generate_notebook.py` / `generate_waypoint_notebook.py` / `generate_krea_notebook.py` | Self-contained SD-Turbo, Waypoint and Krea notebooks and freshness checking |
 | `generate_ltx_notebook.py` / `ltx_setup.py` / `ltx_assets.py` / `ltx_runtime.py` / `ltx_backend.py` | Isolated LTX-2.5 runtime, pinned source/weights, Drive staging, cached prompt/shared GPU weights and continuous clip lifecycle |
-| `check_ltx_imports.py` / `check_ltx_gpu.py` | CPU source/API/metadata contract probe and separate opt-in native GPU clip benchmark |
+| `check_ltx_imports.py` / `check_ltx_gpu.py` / `check_ltx_stream.py` | CPU source/API/metadata checks, opt-in native GPU benchmark and authenticated delivery/prompt probe |
 | `waypoint_seed.py` | Optional pinned SD-Turbo / SDXL-Turbo FP16 seed generator and bounded token/pooled embedding cache |
 | `waypoint_backend.py` / `waypoint_setup.py` | Optional native-720p world-model adapter, bounded four-frame queue, pinned models, and isolated GPU environment |
 | `krea_backend.py` / `krea_assets.py` / `krea_weights.py` / `krea_setup.py` | Optional fixed-480p T2V adapter, pinned HF runtime, validated local weight staging/repair, bounded chunks and isolated INT8 environment |

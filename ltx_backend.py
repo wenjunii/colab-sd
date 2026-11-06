@@ -9,13 +9,13 @@ import time
 
 import cv2
 import numpy as np
-from bridge_protocol import integer
+from bridge_protocol import integer, LTX_OUTPUT_RESOLUTIONS, LTX_FRAME_COUNTS
 from ltx_runtime import CachedPromptEncoder
 
 logger = logging.getLogger(__name__)
-SIZES = ((512, 512), (768, 512), (1024, 576), (1024, 768))
+SIZES = LTX_OUTPUT_RESOLUTIONS
 DEFAULT_SIZE = (1024, 576)
-FRAME_COUNTS = (17, 33, 65, 121)
+FRAME_COUNTS = LTX_FRAME_COUNTS
 
 
 def startup_size():

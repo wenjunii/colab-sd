@@ -97,6 +97,7 @@ def download_models(root):
         hf_hub_download(MODEL_ID, AUDIO_VAE, revision=MODEL_REVISION, dry_run=True)
     except Exception as exc:
         raise RuntimeError('LTX model access failed. Accept the model terms on Hugging Face and '
-                           'provide HF_TOKEN through Colab Secrets; do not paste it into chat or source.') from exc
+                           'use Colab Secrets or an existing workstation Hugging Face login / HF_TOKEN; '
+                           'do not paste it into chat or source.') from exc
     snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION, allow_patterns=list(WEIGHTS))
     return stage_snapshot(snapshot, target, MODEL_ID, MODEL_REVISION, WEIGHTS, {}, label='LTX-2.5')
