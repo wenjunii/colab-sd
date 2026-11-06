@@ -8,13 +8,13 @@ import sys
 import tempfile
 import urllib.request
 
-from krea_assets import MODEL_ID, MODEL_REVISION, WAN_ID, WAN_REVISION, RUNTIME_HASHES, prepare_pipeline
+from krea_assets import MODEL_ID, MODEL_REVISION, WAN_ID, WAN_REVISION, KREA_FILES, WAN_FILES, prepare_pipeline
 from krea_weights import KREA_WEIGHTS, WAN_WEIGHTS, stage_snapshot
 
 PACKAGES = ('diffusers==0.42.1', 'accelerate==1.12.0', 'peft==0.21.2',
             'einops==0.8.2', 'ftfy==6.3.1', 'wcwidth==0.9.4', 'imageio==2.38.1',
             'huggingface-hub==1.33.0', 'psutil==7.2.2', 'importlib-metadata==10.1.0',
-            'zipp==3.23.1', 'requests==2.34.2', 'safetensors==0.8.0')
+            'zipp==3.23.1', 'requests==2.34.2', 'safetensors==0.8.0', 'sentencepiece==0.2.1')
 
 SMOKE = '''import sys
 from diffusers import ModularPipeline, BitsAndBytesConfig, AutoencoderKLWan
@@ -23,6 +23,12 @@ from diffusers.utils.dynamic_modules_utils import get_class_from_dynamic_module
 pipe = ModularPipeline.from_pretrained(sys.argv[1], trust_remote_code=True, local_files_only=True)
 assert type(pipe).__name__ == 'WanModularPipeline'
 assert 'transformer' in pipe.component_names
+pipe.load_components(names=['tokenizer', 'scheduler'], local_files_only=True, trust_remote_code=False)
+assert pipe.tokenizer is not None and pipe.scheduler is not None
+tokens = pipe.tokenizer(['a cinematic landscape'], padding='max_length', truncation=True,
+                        max_length=8, return_tensors='pt')
+assert tuple(tokens['input_ids'].shape) == (1, 8) and tokens['attention_mask'].sum() > 0
+print('Real pinned Wan tokenizer and scheduler load and tokenize on the modern CPU stack.')
 model = get_class_from_dynamic_module(sys.argv[2], subfolder='transformer',
     module_file='causal_model.py', class_name='CausalWanModel', trust_remote_code=True, local_files_only=True)
 assert model.__name__ == 'CausalWanModel'
@@ -42,6 +48,7 @@ def main():
         scratch = Path(directory).resolve()
         assert scratch.parent == Path(tempfile.gettempdir()).resolve()
         packages, snapshot = scratch / 'packages', scratch / 'snapshot'
+        wan = scratch / 'wan-snapshot'
         env = {**os.environ, 'PYTHONPATH': str(packages), 'PYTHONDONTWRITEBYTECODE': '1',
                'HF_MODULES_CACHE': str(scratch / 'modules'), 'HF_HUB_CACHE': str(scratch / 'hub'),
                'HF_HUB_OFFLINE': '1', 'DIFFUSERS_ENABLE_HUB_KERNELS': '0', 'DISABLE_SAGEATTENTION': '1',
@@ -50,14 +57,21 @@ def main():
         subprocess.run([sys.executable, '-B', '-m', 'pip', 'install', '--no-cache-dir', '--no-deps', '--only-binary=:all:',
                         '--target', str(packages), *PACKAGES], env=env, check=True, timeout=180)
 
-        def fetch(name):
-            target = snapshot / name
+        def fetch(item):
+            repo, revision, folder, name, expected = item
+            target = folder / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(f'https://huggingface.co/{MODEL_ID}/resolve/{MODEL_REVISION}/{name}',
+            with urllib.request.urlopen(f'https://huggingface.co/{repo}/resolve/{revision}/{name}',
                                         timeout=60) as response:
                 target.write_bytes(response.read())
+            import hashlib
+            assert (target.stat().st_size, hashlib.sha256(target.read_bytes()).hexdigest()) == expected, name
+        files = [(repo, rev, folder, name, expected)
+                 for repo, rev, folder, entries in ((MODEL_ID, MODEL_REVISION, snapshot, KREA_FILES),
+                                                     (WAN_ID, WAN_REVISION, wan, WAN_FILES))
+                 for name, expected in entries.items()]
         with ThreadPoolExecutor(max_workers=5) as pool:
-            list(pool.map(fetch, RUNTIME_HASHES))
+            list(pool.map(fetch, files))
         for repo, revision, weights in ((MODEL_ID, MODEL_REVISION, KREA_WEIGHTS),
                                          (WAN_ID, WAN_REVISION, WAN_WEIGHTS)):
             with urllib.request.urlopen(f'https://huggingface.co/api/models/{repo}/revision/{revision}?blobs=true',
@@ -78,8 +92,10 @@ def main():
         # Exercise dynamic imports from the same revision-named local folder
         # layout used by the GPU loader, including its custom transformer code.
         runtime = stage_snapshot(snapshot, scratch / 'model-files' / ('krea-' + MODEL_REVISION),
-                                 MODEL_ID, MODEL_REVISION, {}, list(RUNTIME_HASHES))
-        pipeline = prepare_pipeline(runtime, scratch / 'wan', scratch)
+                                 MODEL_ID, MODEL_REVISION, {}, KREA_FILES)
+        wan_runtime = stage_snapshot(wan, scratch / 'model-files' / ('wan-' + WAN_REVISION),
+                                     WAN_ID, WAN_REVISION, {}, WAN_FILES)
+        pipeline = prepare_pipeline(runtime, wan_runtime, scratch)
         subprocess.run([sys.executable, '-B', '-c', SMOKE, str(pipeline), str(runtime), str(staged / checkpoint.name)],
                         cwd=scratch, env=env, check=True, timeout=120)
     print('Disposable import scratch permanently removed; CPU environment preserved. No model weights downloaded.')

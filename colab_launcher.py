@@ -163,6 +163,10 @@ class BridgeSession:
                 else:
                     environment[key] = value
             environment['BRIDGE_BACKEND'] = self.backend
+            if self.backend == 'krea':
+                # Read by Hub at import time in this child, before any downloads.
+                environment['HF_HUB_DISABLE_SYMLINKS'] = '1'
+                environment['HF_HUB_DISABLE_SHARED_BLOBS'] = '1'
             environment['BRIDGE_DIFFUSION_MODEL'] = self.diffusion_model
             if self.backend == 'waypoint' and environment.get('WAYPOINT_PROMPT_SEEDS') == '1':
                 selected = environment.get('WAYPOINT_PROMPT_SEED_MODEL', 'sd-turbo')

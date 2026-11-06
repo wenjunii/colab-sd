@@ -171,6 +171,8 @@ class KreaWeightChecks(unittest.TestCase):
         hashes = {'modular_model_index.json': hashlib.sha256(original.encode()).hexdigest()}
         with patch('huggingface_hub.snapshot_download', side_effect=[str(self.source), str(wan)]) as download, \
                 patch.object(assets, 'RUNTIME_HASHES', hashes), patch.object(cache, 'KREA_WEIGHTS', self.expected), \
+                patch.object(assets, 'KREA_FILES', {'modular_model_index.json': (len(original), hashes['modular_model_index.json'])}), \
+                patch.object(assets, 'WAN_FILES', {'vae/config.json': (2, hashlib.sha256(b'{}').hexdigest())}), \
                 patch.object(cache, 'WAN_WEIGHTS', {wan_name: self.expected[self.name]}):
             staged, pipeline = assets.download_assets(self.root / 'runtime')
             self.assertTrue(staged.is_relative_to(self.root / 'runtime/model-files'))

@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import time
@@ -51,6 +52,51 @@ def fingerprint(path):
     return [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
 
+def resolve_cached_file(path, snapshot, repo, revision):
+    """Read old Drive text links only inside the pinned repo's Hub blob stores."""
+    path, snapshot = Path(path), Path(snapshot).absolute()
+    repository = snapshot.parent.parent
+    if (snapshot.name != revision or snapshot.parent.name != 'snapshots'
+            or repository.name != 'models--' + repo.replace('/', '--')):
+        return path
+    hub = repository.parent.resolve()
+    allowed = ((repository / 'blobs').resolve(), (hub / 'blobs').resolve())
+    if not all(folder.is_relative_to(hub) for folder in allowed):
+        raise InvalidCheckpoint('cached blob store resolves outside its Hub cache')
+    for _ in range(4):
+        try:
+            current = path.resolve(strict=True)
+        except (FileNotFoundError, RuntimeError) as exc:
+            raise InvalidCheckpoint('cached file or blob is missing, or its link is cyclic') from exc
+        if not current.is_relative_to(snapshot) and not any(current.is_relative_to(p) for p in allowed):
+            raise InvalidCheckpoint('cached link resolves outside its Hub snapshot/blob stores')
+        if current.stat().st_size <= 256:
+            try:
+                link = current.read_text(encoding='ascii').strip()
+            except UnicodeError:
+                return current
+            if re.fullmatch(r'(?:\.\./)+blobs/(?:[0-9a-f]{2}/)?(?:[0-9a-f]{40}|[0-9a-f]{64})', link):
+                candidate = current.parent / link
+                if not any(candidate.resolve().is_relative_to(p) for p in allowed):
+                    raise InvalidCheckpoint('cached text link resolves outside its Hub blob stores')
+                logger.info('Resolving cached blob for %s', path.name)
+                path = candidate
+                continue
+        return current
+    raise InvalidCheckpoint('cached link chain exceeds the allowed depth')
+
+
+def validate_metadata(path, expected):
+    size, digest = expected
+    if path.stat().st_size != size or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        raise InvalidCheckpoint('cached metadata size/SHA-256 does not match the pinned file')
+    if path.suffix == '.json':
+        try:
+            json.loads(path.read_text(encoding='utf-8'))
+        except (ValueError, UnicodeError) as exc:
+            raise InvalidCheckpoint('cached metadata is not valid JSON') from exc
+
+
 def validate_checkpoint(path, expected):
     """Check the whole file's digest and parse its header, without loading tensors."""
     from safetensors import safe_open
@@ -73,7 +119,7 @@ def validate_checkpoint(path, expected):
         raise InvalidCheckpoint(f'invalid Safetensors header: {exc}') from exc
 
 
-def copy_checkpoint(source, partial, expected):
+def copy_file(source, partial, expected):
     size, digest = expected
     try:
         actual_size = source.stat().st_size
@@ -93,6 +139,19 @@ def copy_checkpoint(source, partial, expected):
                 reported = time.monotonic()
     if copied != size or checksum.hexdigest() != digest:
         raise InvalidCheckpoint('cached checkpoint SHA-256/size does not match the pinned weight')
+
+
+def copy_metadata(source, partial, expected):
+    copy_file(source, partial, expected)
+    if partial.suffix == '.json':
+        try:
+            json.loads(partial.read_text(encoding='utf-8'))
+        except (ValueError, UnicodeError) as exc:
+            raise InvalidCheckpoint('cached metadata is not valid JSON') from exc
+
+
+def copy_checkpoint(source, partial, expected):
+    copy_file(source, partial, expected)
     # Digest already checked while copying; only parse the local file's header.
     from safetensors import safe_open
     try:
@@ -115,19 +174,20 @@ def stage_snapshot(snapshot, target, repo, revision, weights, small_files):
             validated = {}
     except (OSError, ValueError):
         validated = {}
+    entries = {**weights, **dict(small_files)}
     pending = []
-    for name, expected in weights.items():
+    for name, expected in entries.items():
         path = owned_path(target, name)
         try:
             record = {'sha256': expected[1], 'stat': fingerprint(path)}
             if record != validated.get(name):
-                validate_checkpoint(path, expected)
+                (validate_checkpoint if name in weights else validate_metadata)(path, expected)
             if path.stat().st_size != expected[0]:
                 raise InvalidCheckpoint('wrong local checkpoint size')
             validated[name] = record
         except (FileNotFoundError, InvalidCheckpoint):
             pending.append(name)
-    required = sum(weights[name][0] for name in pending)
+    required = sum(entries[name][0] for name in pending)
     if required and shutil.disk_usage(target).free < required + 1024 ** 3:
         raise RuntimeError(f'Krea local staging needs {required / 1024**3:.1f} GiB plus 1 GiB free under '
                            f'{target}. Persistent model weights were preserved; use a VM with more disk space.')
@@ -135,34 +195,32 @@ def stage_snapshot(snapshot, target, repo, revision, weights, small_files):
         scratch = Path(directory).resolve()
         if scratch.parent != target:
             raise ValueError('Krea staging scratch resolved outside its model folder')
-        partial = scratch / 'checkpoint.part'
         for name in pending:
-            logger.info('Validating/staging %s (%.2f GiB)', name, weights[name][0] / 1024**3)
+            partial = scratch / Path(name).name
+            copier = copy_checkpoint if name in weights else copy_metadata
+            logger.info('Validating/staging %s (%.2f GiB)', name, entries[name][0] / 1024**3)
             try:
-                copy_checkpoint(snapshot / name, partial, weights[name])
+                copier(resolve_cached_file(snapshot / name, snapshot, repo, revision), partial, entries[name])
             except InvalidCheckpoint as exc:
                 logger.warning('Invalid cached %s: %s. Re-downloading only this file once.', name, exc)
                 repaired = hf_hub_download(repo, name, revision=revision, force_download=True)
                 try:
-                    copy_checkpoint(Path(repaired), partial, weights[name])
+                    copier(resolve_cached_file(repaired, snapshot, repo, revision), partial, entries[name])
                 except InvalidCheckpoint as failure:
-                    raise RuntimeError(f'Krea checkpoint still invalid after one download: {name}. '
+                    raise RuntimeError(f'Krea asset still invalid after one download: {name}. '
                                        'Check Drive storage/quota and retry; other cached models were preserved.') from failure
             destination = owned_path(target, name)
             destination.parent.mkdir(parents=True, exist_ok=True)
             partial.replace(destination)
-            validated[name] = {'sha256': weights[name][1], 'stat': fingerprint(destination)}
+            validated[name] = {'sha256': entries[name][1], 'stat': fingerprint(destination)}
             # Save per-file so a later interrupted copy can reuse completed files.
             marker = scratch / 'validated.json'
             marker.write_text(json.dumps(validated, indent=2) + '\n', encoding='utf-8')
             marker.replace(receipt)
-            logger.info('Validated local checkpoint: %s', name)
-        for name in small_files:
-            destination = owned_path(target, name)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(snapshot / name, destination)
+            logger.info('Validated local %s: %s', 'checkpoint' if name in weights else 'metadata', name)
         marker = scratch / 'validated.json'
         marker.write_text(json.dumps(validated, indent=2) + '\n', encoding='utf-8')
         marker.replace(receipt)
-    logger.info('Krea local model files ready: %s (%d checkpoint(s) reused)', target, len(weights) - len(pending))
+    logger.info('Krea local model files ready: %s (%d checkpoint(s) reused)',
+                target, len(weights) - sum(name in weights for name in pending))
     return target
