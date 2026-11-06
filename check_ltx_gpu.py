@@ -12,6 +12,8 @@ def main():
     parser.add_argument('--frames', type=int, choices=(17, 33, 65, 121), default=17)
     parser.add_argument('--size', choices=('512x512', '768x512', '1024x576', '1024x768'), default='512x512')
     parser.add_argument('--image', default='')
+    parser.add_argument('--profile', choices=('resident', 'low_memory'), default='resident')
+    parser.add_argument('--continuous', action='store_true', help='Validate automatic seed advancement and scene continuation')
     args = parser.parse_args()
     from krea_setup import require_unused_port
     from krea_quant import configure_allocator
@@ -19,6 +21,7 @@ def main():
     configure_allocator(os.environ)
     width, height = map(int, args.size.split('x'))
     os.environ.update(LTX_CLIP_FRAMES=str(args.frames), LTX_INPUT_IMAGE=args.image,
+                      LTX_PERFORMANCE_PROFILE=args.profile, LTX_CONTINUOUS='0',
                       BRIDGE_INITIAL_WIDTH=str(width), BRIDGE_INITIAL_HEIGHT=str(height),
                       HF_HUB_DISABLE_SYMLINKS='1', HF_HUB_DISABLE_SHARED_BLOBS='1')
     import cv2
@@ -38,9 +41,11 @@ def main():
               'size': [width, height], 'frames_per_clip': args.frames, 'image_conditioning': bool(args.image),
               'construction_seconds': round(time.perf_counter() - started, 3), 'clips': []}
     print('LTX_READY ' + json.dumps(report), flush=True)
+    backend.configure({'ltx_continuous': args.continuous})
     for seed in (42, 43):
-        backend.configure({'prompt_a': 'A cinematic shot of a red toy car driving along a mountain road at sunrise',
-                           'seed': seed, 'ltx_generate': True})
+        if seed == 42 or not args.continuous:
+            backend.configure({'prompt_a': 'A cinematic shot of a red toy car driving along a mountain road at sunrise',
+                               'seed': seed, 'ltx_generate': True})
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         start = time.perf_counter()
@@ -48,7 +53,7 @@ def main():
         first_seconds = time.perf_counter() - start
         count = 1
         last = first
-        while backend.can_generate:
+        while count < args.frames:
             last, _ = backend.next_frame()
             count += 1
         assert count == args.frames and first.std() > 2 and last.std() > 2
@@ -57,11 +62,15 @@ def main():
         item = {'seed': seed, 'decoded_frames': count, 'first_frame_seconds': round(first_seconds, 3),
                 'generation_seconds': round(backend.batch_ms / 1000, 3),
                 'generated_fps': round(count * 1000 / backend.batch_ms, 3),
+                'profile': backend.profile, 'actual_seed': backend.last_seed,
+                'prompt_cache_hit': backend.progress()['ltx_prompt_cache_hit'],
+                'prompt_seconds': backend.progress()['ltx_prompt_ms'] / 1000,
                 'peak_allocated_gib': round(torch.cuda.max_memory_allocated() / 1024**3, 3),
                 'peak_reserved_gib': round(torch.cuda.max_memory_reserved() / 1024**3, 3)}
         report['clips'].append(item)
         (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
         print('LTX_CLIP_PASS ' + json.dumps(item), flush=True)
+    backend.close()
     print('LTX_GPU_PASS ' + json.dumps(report), flush=True)
 
 
