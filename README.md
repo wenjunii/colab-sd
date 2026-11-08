@@ -727,6 +727,22 @@ Use `python sync_to_github.py --check` for build and validation without Git chan
 
 Supply `--pr-body-file path/to/description.txt` to publish a detailed UTF-8 PR description with its line breaks preserved. The sync log prints the test summary, and `sync.bat` preserves the Python script's exit code. After creating a protected-branch PR, wait for **Project checks** before merging it.
 
+### Reduced GitHub Actions usage
+
+Normal GitHub sync stays enabled. **Project checks run once per pull-request revision**, rather than on the branch push, PR and merge push. Local build/tests still run before syncing. The workflow first uses `ci_plan.py` to compare the complete PR against its target branch, including renamed/deleted files, then selects:
+
+| Change | Automatic project checks |
+| --- | --- |
+| README / Markdown / documentation figures and benchmark records only | Change selection; no runtime package installation jobs |
+| Bridge, TouchDesigner, notebooks, tests or other code | CPU tests, notebook consistency, source/API probes and dependency audit |
+| Krea runtime / dependencies | Matching Windows Krea import check, plus CPU checks |
+| LTX runtime / dependencies | Linux LTX dependency/build/import checks and Windows LTX imports, plus CPU checks |
+| Shared installers, test dependency pins or CI policy | All project checks |
+
+Krea setup and weight helpers are also used by LTX, so changing them selects both applicable stacks. A failure to read PR history fails the selection job instead of silently skipping validation. Documentation skips and conditional jobs do not disable local checks or change model/runtime behavior. Existing GitHub-managed CodeQL/security settings are preserved; these can still run separately.
+
+For a complete hosted run regardless of changed files, open **Actions → Project checks → Run workflow**, or run `gh workflow run checks.yml --ref main`. The workflow's manual trigger always selects all stacks; see [GitHub's manual workflow instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow). Direct branch pushes do not run this project workflow; use a PR or the manual full run when hosted validation is needed.
+
 ### Automatic development cleanup
 
 Normal sync runs and `--check` automatically give build/test subprocesses a private temporary folder. Their `TEMP`, `TMP`, and `TMPDIR` point there, and new Python bytecode writes are disabled. Only that run's disposable scratch is permanently removed when checks finish, including after failure; failure output remains in the reported error. The success message reports that cleanup is permanent. Built project archives and the generated notebook are published to the project as usual. Standalone tests and unrelated programs keep their normal temporary-file behavior.
