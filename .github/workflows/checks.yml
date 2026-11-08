@@ -1,21 +1,39 @@
 name: Project checks
-on: [push, pull_request]
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: project-checks-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      cpu: ${{ steps.plan.outputs.cpu }}
+      waypoint: ${{ steps.plan.outputs.waypoint }}
+      ltx: ${{ steps.plan.outputs.ltx }}
+      windows: ${{ steps.plan.outputs.windows }}
+      windows_matrix: ${{ steps.plan.outputs.windows_matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Select checks for this pull request (manual runs select all)
+        id: plan
+        run: python -B ci_plan.py
   workstation-windows:
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - backend: krea
-            python: '3.11'
-          - backend: ltx
-            python: '3.13'
+      matrix: ${{ fromJSON(needs.changes.outputs.windows_matrix) }}
     defaults:
       run:
         shell: bash
@@ -76,6 +94,8 @@ jobs:
           print('Windows pinned-stack checks passed; disposable source/fixture scratch removed. No models or CUDA installed.')
           PY
   ltx-dependencies:
+    needs: changes
+    if: needs.changes.outputs.ltx == 'true'
     runs-on: ubuntu-latest
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -167,6 +187,8 @@ jobs:
           print('Both pinned LTX wheels built/imported; disposable source/build files removed. No GPU packages or models installed.')
           PY
   waypoint-bootstrap:
+    needs: changes
+    if: needs.changes.outputs.waypoint == 'true'
     runs-on: ubuntu-latest
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -203,6 +225,8 @@ jobs:
           print('Python 3.13 bootstrap and reuse passed; disposable fixture removed.')
           PY
   cpu-checks:
+    needs: changes
+    if: needs.changes.outputs.cpu == 'true'
     runs-on: ubuntu-latest
     env:
       HF_HUB_OFFLINE: '1'
