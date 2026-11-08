@@ -172,16 +172,21 @@ class WaypointBackend:
             raise ValueError('Prompt seed model must be sd-turbo or sdxl-turbo')
         import torch
         from huggingface_hub import snapshot_download
+        from colab_setup import cached_model_snapshot, model_cache_arguments
         from world_engine import WorldEngine, CtrlInput
         if quant not in ('intw8a8', 'bf16'):
             raise ValueError('Use intw8a8 or bf16 here; FP8/FP4 are not selected')
         engine_type = engine_class_for_profile(WorldEngine, torch, compile_profile)
         if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8:
             raise RuntimeError('Waypoint requires an NVIDIA Ampere-or-newer CUDA GPU')
-        model = snapshot_download(MODEL_ID, revision=MODEL_REVISION,
-                                  allow_patterns=['config.yaml', 'model.safetensors'])
-        vae = snapshot_download(VAE_ID, revision=VAE_REVISION,
-                                allow_patterns=['taehv1_5.pth'])
+        model = cached_model_snapshot(MODEL_ID, MODEL_REVISION, ['config.yaml', 'model.safetensors'])
+        if model is None:
+            model = snapshot_download(MODEL_ID, revision=MODEL_REVISION,
+                                      allow_patterns=['config.yaml', 'model.safetensors'], **model_cache_arguments())
+        vae = cached_model_snapshot(VAE_ID, VAE_REVISION, ['taehv1_5.pth'])
+        if vae is None:
+            vae = snapshot_download(VAE_ID, revision=VAE_REVISION,
+                                    allow_patterns=['taehv1_5.pth'], **model_cache_arguments())
         with torch.no_grad():
             engine = engine_type(model, quant=None if quant == 'bf16' else quant,
                                  model_config_overrides={'ae_uri': vae},

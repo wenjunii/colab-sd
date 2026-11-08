@@ -24,10 +24,11 @@ currently serving SD-Turbo or Waypoint. Setup refuses an occupied bridge port an
 stops another server. Its isolated environment does not replace notebook kernel packages.
 
 1. Run Step 1. L4/T4 and GPUs with less than 35 GiB total / 30 GiB free VRAM are rejected.
-2. Step 2 can store weights in Drive, under `StreamDiffusion/krea-models`. Missing files
+2. Step 2 defaults to storing weights in Drive, under `StreamDiffusion/krea-models`. Missing files
    download once; later sessions reuse the pinned snapshots. Allow roughly 55 GB in Drive
    and 55 GB free on the VM for validated local model files. With Drive disabled, both
    the Hub cache and local copies use VM disk (roughly 110 GB for weights alone).
+   Allow several additional GB in Drive for the shared package download cache.
 3. Launch Step 3, open the updated TD project/component, paste the URL and enable Connect.
    The handshake selects **Krea Realtime** and fixed **832 × 480** output.
 4. Edit **Prompt A** / pulse **Submit Prompts**. Changes apply at the next generated chunk.

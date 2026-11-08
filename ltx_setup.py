@@ -10,6 +10,7 @@ import urllib.request
 from waypoint_setup import ensure_environment
 from krea_setup import require_unused_port
 from ltx_assets import CODE_REVISION, CODE_SHA256, ensure_source
+from colab_setup import pip_cache_arguments
 
 TORCH_INDEX = 'https://download.pytorch.org/whl/cu130'
 TORCH_PACKAGES = ('torch==2.11.0', 'torchvision==0.26.0', 'torchaudio==2.11.0')
@@ -78,13 +79,15 @@ def setup(root, install_tunnel=True, project_dir=None, check_port=True):
     reusable = not repaired and marker.is_file() and json.loads(marker.read_text()) == signature
     environment = setup_environment(python)
     if not reusable:
-        _run_stage('install CUDA PyTorch packages', [str(python), '-m', 'pip', 'install', '--no-cache-dir',
+        _run_stage('install CUDA PyTorch packages', [str(python), '-m', 'pip', 'install', *pip_cache_arguments(),
                         '--index-url', TORCH_INDEX, *TORCH_PACKAGES], environment)
-        _run_stage('install runtime dependencies', [str(python), '-m', 'pip', 'install', '--no-cache-dir',
+        _run_stage('install runtime dependencies', [str(python), '-m', 'pip', 'install', *pip_cache_arguments(),
                         '--index-url', 'https://pypi.org/simple', *DEPENDENCIES], environment)
         _run_stage('install pinned LTX source', [str(python), '-m', 'pip', 'install', '--no-deps', '--no-build-isolation',
                         str(source / 'packages/ltx-core'), str(source / 'packages/ltx-pipelines')],
                        environment)
+    else:
+        print('LTX setup: reusing the installed environment on this VM.', flush=True)
     _run_stage('check installed dependencies', [str(python), '-m', 'pip', 'check'], environment)
     _run_stage('check GPU and LTX imports', [str(python), '-c', 'from ltx_backend import gpu_preflight; '
                     'from ltx_pipelines import DistilledPipeline; '

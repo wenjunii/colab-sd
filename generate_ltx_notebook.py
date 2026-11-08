@@ -20,11 +20,13 @@ under common control. Your Hugging Face account must already have accepted model
 apply independently of the bridge's MIT and runtime's Apache licenses.
 
 1. Run Step 1, then set up a **read token** in Colab Secrets named `HF_TOKEN`,
-   with Notebook access enabled. Keep the token out of notebook source and outputs.
+   with Notebook access enabled for first download or missing-file repair. A complete
+   pinned cache can be reused without a token. Keep credentials out of source and outputs.
 2. Run Step 2. The runtime uses its own `/content/colab-sd-ltx/venv`; models default
    to Drive `MyDrive/StreamDiffusion/ltx25-models`. Five pinned checkpoints total
    **71.1 GB (66.2 GiB)**. Allow at least 72 GB in Drive and 72 GB on the VM for
-   validated local staging, plus environment space. Without Drive, allow both copies
+   validated local staging, plus several GB in Drive for package downloads and VM
+   environment space. Without Drive, allow both copies
    on VM disk. Valid files are reused; other backend caches are preserved.
 3. Step 3 chooses actual generation resolution and clip length. The default is
    **1024 × 576 (16:9) / 33 frames**. Other choices are 512 × 512, 768 × 512 and
@@ -118,9 +120,10 @@ Keep the Colab launch cell and TouchDesigner running for playback.
                 token=userdata.get('HF_TOKEN')
             except Exception:
                 token=None
-        if not token:
-            raise RuntimeError('Add a Hugging Face read token as Colab Secret HF_TOKEN and enable Notebook access.')
-        os.environ['HF_TOKEN']=token
+        if token:
+            os.environ['HF_TOKEN']=token
+        else:
+            print('No HF_TOKEN: complete cached LTX weights can be reused; missing files need an authorized token.')
         del token
         import importlib, colab_setup, ltx_setup
         importlib.reload(colab_setup)

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import urllib.request
 import venv
+from colab_setup import pip_cache_arguments
 
 RUNTIME_REVISION = '68b316390d576dd9f671f552803526bbf8eb2ed5'
 BOOTSTRAP_PIP = 'pip==26.3'
@@ -59,7 +60,7 @@ def ensure_environment(environment, label='Waypoint'):
         venv.EnvBuilder(with_pip=False).create(environment)
     print(f'Bootstrapping pip in the isolated {label} environment (without ensurepip)...', flush=True)
     output = _capture([sys.executable, '-m', 'pip', '--python', str(python),
-                       'install', '--no-cache-dir', '--force-reinstall', BOOTSTRAP_PIP], 'Isolated pip bootstrap')
+                       'install', *pip_cache_arguments(), '--force-reinstall', BOOTSTRAP_PIP], 'Isolated pip bootstrap')
     if output:
         print(output, flush=True)
     _capture([str(python), '-I', '-m', 'pip', '--version'], 'Isolated pip verification')
@@ -79,9 +80,12 @@ def setup(root, prompt_seeds=False, install_tunnel=True):
     reusable = not repaired and marker.exists() and json.loads(marker.read_text()) == signature
     if not reusable:
         # Windows PyPI Torch may be CPU-only; select the CUDA build explicitly.
-        subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir',
+        print('Waypoint setup: installing packages into this VM; compatible cached downloads are reused.', flush=True)
+        subprocess.run([str(python), '-m', 'pip', 'install', *pip_cache_arguments(),
                         'torch==2.11.0', '--index-url', 'https://download.pytorch.org/whl/cu130'], check=True)
-        subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', *dependencies], check=True)
+        subprocess.run([str(python), '-m', 'pip', 'install', *pip_cache_arguments(), *dependencies], check=True)
+    else:
+        print('Waypoint setup: reusing the installed environment on this VM.', flush=True)
     subprocess.run([str(python), '-m', 'pip', 'check'], check=True)
     # Fail before model downloads when the isolated runtime cannot use CUDA.
     subprocess.run([str(python), '-c',

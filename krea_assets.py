@@ -79,16 +79,28 @@ def prepare_pipeline(snapshot, wan_snapshot, root):
 
 def download_assets(root):
     from huggingface_hub import snapshot_download
-    from krea_weights import KREA_WEIGHTS, WAN_WEIGHTS, owned_path, stage_snapshot
-    snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION,
-                                 allow_patterns=[*RUNTIME_HASHES, 'README.md', 'LICENSE*', 'transformer/*.safetensors'])
-    wan = snapshot_download(WAN_ID, revision=WAN_REVISION, allow_patterns=list(WAN_PATTERNS))
+    from krea_weights import KREA_WEIGHTS, WAN_WEIGHTS, owned_path, stage_snapshot, local_snapshot_ready
+    from colab_setup import cached_model_snapshot, model_cache_arguments
     local = Path(root).resolve() / 'model-files'
     local.mkdir(parents=True, exist_ok=True)
+    local_krea = owned_path(local, 'krea-' + MODEL_REVISION)
+    local_wan = owned_path(local, 'wan-' + WAN_REVISION)
+    if (local_snapshot_ready(local_krea, {**KREA_WEIGHTS, **KREA_FILES})
+            and local_snapshot_ready(local_wan, {**WAN_WEIGHTS, **WAN_FILES})):
+        return local_krea, prepare_pipeline(local_krea, local_wan, root)
+    snapshot = cached_model_snapshot(MODEL_ID, MODEL_REVISION, {**KREA_WEIGHTS, **KREA_FILES})
+    if snapshot is None:
+        snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION,
+                                     allow_patterns=[*RUNTIME_HASHES, 'README.md', 'LICENSE*', 'transformer/*.safetensors'],
+                                     **model_cache_arguments())
+    wan = cached_model_snapshot(WAN_ID, WAN_REVISION, {**WAN_WEIGHTS, **WAN_FILES})
+    if wan is None:
+        wan = snapshot_download(WAN_ID, revision=WAN_REVISION, allow_patterns=list(WAN_PATTERNS),
+                                **model_cache_arguments())
     # Keep the persistent Hub/Drive cache intact and load from validated VM-local
     # files. Inference should not mmap multi-GB checkpoints through Drive FUSE.
-    staged = stage_snapshot(snapshot, owned_path(local, 'krea-' + MODEL_REVISION),
+    staged = stage_snapshot(snapshot, local_krea,
                             MODEL_ID, MODEL_REVISION, KREA_WEIGHTS, KREA_FILES)
-    staged_wan = stage_snapshot(wan, owned_path(local, 'wan-' + WAN_REVISION),
+    staged_wan = stage_snapshot(wan, local_wan,
                                 WAN_ID, WAN_REVISION, WAN_WEIGHTS, WAN_FILES)
     return staged, prepare_pipeline(staged, staged_wan, root)
