@@ -153,6 +153,7 @@ def package_requirement(torch_version, python_version=None):
 def ensure_dependencies(root):
     """Install matching wheels and verify imports; never silently request FP16."""
     import torch
+    from colab_setup import pip_cache_arguments
     requirement = package_requirement(torch.__version__)
     if not torch.cuda.is_available() or not torch.version.cuda:
         raise RuntimeError('TensorRT requires a CUDA GPU runtime.')
@@ -165,7 +166,7 @@ def ensure_dependencies(root):
     logs.mkdir(exist_ok=True)
     log_path = logs / 'tensorrt-setup.log'
     cuda_tag = 'cu' + torch.version.cuda.replace('.', '')
-    command = [sys.executable, '-m', 'pip', 'install', requirement, f'torch=={torch.__version__}',
+    command = [sys.executable, '-m', 'pip', 'install', *pip_cache_arguments(False), requirement, f'torch=={torch.__version__}',
                '--extra-index-url', f'https://download.pytorch.org/whl/{cuda_tag}']
     print(f'Installing {requirement} for PyTorch {torch.__version__} / CUDA {torch.version.cuda}.', flush=True)
     print(f'Installation log: {log_path}', flush=True)

@@ -9,6 +9,7 @@ import sys
 import urllib.request
 
 from waypoint_setup import ensure_environment
+from colab_setup import pip_cache_arguments
 
 DEPENDENCIES = (
     'diffusers==0.42.1', 'transformers==5.10.1', 'huggingface-hub==1.33.0',
@@ -51,10 +52,13 @@ def setup(root, install_tunnel=True, project_dir=None, check_port=True):
     pip_env = {key: value for key, value in os.environ.items() if not key.startswith('PIP_')}
     pip_env['PIP_CONFIG_FILE'] = os.devnull
     if not reusable:
-        subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', TORCH,
+        print('Krea setup: installing packages into this VM; compatible cached downloads are reused.', flush=True)
+        subprocess.run([str(python), '-m', 'pip', 'install', *pip_cache_arguments(), TORCH,
                         '--index-url', TORCH_INDEX], env=pip_env, check=True)
-        subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir',
+        subprocess.run([str(python), '-m', 'pip', 'install', *pip_cache_arguments(),
                         '--index-url', 'https://pypi.org/simple', *DEPENDENCIES], env=pip_env, check=True)
+    else:
+        print('Krea setup: reusing the installed environment on this VM.', flush=True)
     subprocess.run([str(python), '-m', 'pip', 'check'], env=pip_env, check=True)
     # GPU/import checks precede model downloads. No attention extension or
     # noncommercial Krea GitHub application is installed.

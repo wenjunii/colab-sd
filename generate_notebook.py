@@ -8,6 +8,26 @@ from bridge_protocol import OUTPUT_RESOLUTIONS
 PROJECT_DIR = Path(__file__).resolve().parent
 
 STREAMING_GUIDE = """
+## What Google Drive preserves
+Drive storage defaults **On** in all four notebooks. Authorize the mount and keep
+the same `DRIVE_MODEL_FOLDER` on later sessions. Complete pinned Waypoint/Krea/LTX
+snapshots are checked locally before any Hub request; missing files download into
+that folder. StreamDiffusion also reuses its Hub cache but may check remote metadata.
+Package downloads are cached separately under the model folder's parent at
+`.bridge-packages/pip-cache` (shared by the four default folders). Allow several
+additional GB in Drive for compatible package downloads.
+
+A fresh Colab VM still installs packages on its local disk, copies Krea/LTX weights
+from Drive for reliable loading, and loads models into GPU memory. Drive cannot
+preserve a running process or GPU state. On the same VM, matching environments and
+validated Krea/LTX local copies are reused. The first run after this update may fill
+the package cache because previous installers disabled it. Logs distinguish model
+downloads, package installation, Drive-to-VM copying and local reuse.
+
+Saved notebook copies do not update automatically. Open the current repository
+notebook, or replace **both setup and launch/helper cells** before rerunning them.
+Keep existing Drive folders; no cache deletion or runtime reset is required.
+
 ## Video transport and quality
 Use the updated TouchDesigner component with this notebook. On **Streaming**, choose
 **WebRTC (automatic fallback)** for a reachable direct/TURN media path, or
@@ -38,14 +58,14 @@ def make_notebook(project_dir=PROJECT_DIR):
 Run SD-Turbo or SDXL-Turbo on a Colab GPU and stream output to TouchDesigner over a Cloudflare tunnel.
 
 1. Select a GPU runtime, then run the four code cells in order.
-2. In Step 2, enable `USE_GOOGLE_DRIVE` to retain downloaded models between runtimes.
+2. In Step 2, leave `USE_GOOGLE_DRIVE` enabled to retain downloaded models between runtimes.
 3. The launcher checks actual server readiness before creating the tunnel.
 4. Paste the displayed `wss://.../ws/stream` URL into TouchDesigner and enable Connect.
 
-Drive storage is optional and asks you to authorize a mount. Models are cached in
+Drive storage defaults On and asks you to authorize a mount. Models are cached in
 `MyDrive/StreamDiffusion/models` by default. The first run downloads missing weights;
 later sessions reuse them. Drive reads can make startup slower than local disk.
-Packages still install in each new VM. In Step 4, keep `PERSIST_TENSORRT_CACHE` and
+Packages still install in each new VM, using compatible cached downloads. In Step 4, keep `PERSIST_TENSORRT_CACHE` and
 `REUSE_TENSORRT_ENGINES` enabled to save matching engines alongside the models on Drive.
 Keep the cache private; full-weight engine archives use several GB per resolution.
 
@@ -87,8 +107,8 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
     """)
     setup = dedent("""\
         # @title Step 2: Install environment and choose model storage
-        # @markdown Enable Drive to reuse model weights in future Colab runtimes. Authorize Drive when prompted.
-        USE_GOOGLE_DRIVE = False # @param {type:"boolean"}
+        # @markdown Drive defaults On to reuse model and package downloads. Authorize Drive when prompted.
+        USE_GOOGLE_DRIVE = True # @param {type:"boolean"}
         # @markdown Folder relative to MyDrive. Keep the same folder in later sessions.
         DRIVE_MODEL_FOLDER = "StreamDiffusion/models" # @param {type:"string"}
 
@@ -102,6 +122,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         ('launcher_code', 'colab_launcher.py', 'colab_launcher.py'),
         ('tensorrt_code', 'tensorrt_backend.py', 'tensorrt_backend.py'),
         ('sdxl_code', 'sdxl_stream.py', 'sdxl_stream.py'),
+        ('setup_code', 'colab_setup.py', 'colab_setup.py'),
     ):
         write_server += variable + ' = ' + json.dumps((root / source_name).read_text(encoding='utf-8')) + '\n'
         write_server += f"with open({target_name!r}, 'w', encoding='utf-8') as handle:\n    handle.write({variable})\n"

@@ -198,12 +198,15 @@ def stage_snapshot(snapshot, target, repo, revision, weights, small_files, label
         for name in pending:
             partial = scratch / Path(name).name
             copier = copy_checkpoint if name in weights else copy_metadata
-            logger.info('Validating/staging %s (%.2f GiB)', name, entries[name][0] / 1024**3)
+            logger.info('Copying cached %s to VM disk and validating (%.2f GiB); this is not a Hub download',
+                        name, entries[name][0] / 1024**3)
             try:
                 copier(resolve_cached_file(snapshot / name, snapshot, repo, revision), partial, entries[name])
             except InvalidCheckpoint as exc:
                 logger.warning('Invalid cached %s: %s. Re-downloading only this file once.', name, exc)
-                repaired = hf_hub_download(repo, name, revision=revision, force_download=True)
+                from colab_setup import model_cache_arguments
+                repaired = hf_hub_download(repo, name, revision=revision, force_download=True,
+                                           **model_cache_arguments())
                 try:
                     copier(resolve_cached_file(repaired, snapshot, repo, revision), partial, entries[name])
                 except InvalidCheckpoint as failure:
@@ -224,3 +227,20 @@ def stage_snapshot(snapshot, target, repo, revision, weights, small_files, label
     logger.info('%s local model files ready: %s (%d checkpoint(s) reused)',
                 label, target, len(weights) - sum(name in weights for name in pending))
     return target
+
+
+def local_snapshot_ready(target, files):
+    """Reuse this VM's previously hash-validated copies without revisiting Drive."""
+    target = Path(target).resolve()
+    try:
+        receipt = json.loads(owned_path(target, '.validated.json').read_text(encoding='utf-8'))
+        if not isinstance(receipt, dict):
+            return False
+        for name, (size, digest) in files.items():
+            path = owned_path(target, name)
+            if path.stat().st_size != size or receipt.get(name) != {'sha256': digest, 'stat': fingerprint(path)}:
+                return False
+        logger.info('Reusing validated VM-local model files: %s; no download or Drive copy needed', target)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False

@@ -86,18 +86,25 @@ def ensure_source(root):
 def download_models(root):
     import shutil
     from huggingface_hub import hf_hub_download, snapshot_download
-    from krea_weights import stage_snapshot
+    from krea_weights import stage_snapshot, local_snapshot_ready
+    from colab_setup import cached_model_snapshot, model_cache_arguments
     target = Path(root).resolve() / 'model-files' / MODEL_REVISION
     target.mkdir(parents=True, exist_ok=True)
+    if local_snapshot_ready(target, WEIGHTS):
+        return target
     missing = sum(size for name, (size, _) in WEIGHTS.items() if not (target / name).is_file())
     if shutil.disk_usage(target).free < missing + 1024**3:
         raise RuntimeError(f'LTX local staging needs {missing / 1024**3:.1f} GiB plus 1 GiB free')
-    # Check access with metadata only, before requesting any of the large weights.
-    try:
-        hf_hub_download(MODEL_ID, AUDIO_VAE, revision=MODEL_REVISION, dry_run=True)
-    except Exception as exc:
-        raise RuntimeError('LTX model access failed. Accept the model terms on Hugging Face and '
-                           'use Colab Secrets or an existing workstation Hugging Face login / HF_TOKEN; '
-                           'do not paste it into chat or source.') from exc
-    snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION, allow_patterns=list(WEIGHTS))
+    snapshot = cached_model_snapshot(MODEL_ID, MODEL_REVISION, WEIGHTS)
+    if snapshot is None:
+        # Access is needed for missing files, not for reading a complete local cache.
+        try:
+            hf_hub_download(MODEL_ID, AUDIO_VAE, revision=MODEL_REVISION, dry_run=True,
+                            **model_cache_arguments())
+        except Exception as exc:
+            raise RuntimeError('LTX model access failed. Accept the model terms on Hugging Face and '
+                               'use Colab Secrets or an existing workstation Hugging Face login / HF_TOKEN; '
+                               'do not paste it into chat or source.') from exc
+        snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION, allow_patterns=list(WEIGHTS),
+                                     **model_cache_arguments())
     return stage_snapshot(snapshot, target, MODEL_ID, MODEL_REVISION, WEIGHTS, {}, label='LTX-2.5')

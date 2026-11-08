@@ -7,7 +7,8 @@ from textwrap import dedent
 from generate_notebook import PROJECT_DIR, STREAMING_GUIDE, code_cell
 
 SOURCES = ('colab_server.py', 'bridge_protocol.py', 'colab_launcher.py', 'webrtc_transport.py',
-           'tensorrt_backend.py', 'colab_setup.py', 'waypoint_backend.py', 'waypoint_setup.py', 'waypoint_seed.py')
+           'tensorrt_backend.py', 'colab_setup.py', 'krea_weights.py',
+           'waypoint_backend.py', 'waypoint_setup.py', 'waypoint_seed.py')
 
 
 def make_notebook(project_dir=PROJECT_DIR):
@@ -22,7 +23,7 @@ Setup creates the environment without ensurepip, then bootstraps pip into that i
 Rerunning setup repairs a partial pip-less environment while retaining installed packages.
 Do not run both GPU servers on the same GPU simultaneously.
 
-1. Optional Drive storage reuses pinned model and VAE weights on later runtimes.
+1. Drive storage defaults On and reuses pinned model and VAE weights on later runtimes.
 2. Launch with INT8 for Ampere/A100; BF16 is available for comparison.
 3. Open the updated project/component in TouchDesigner, paste the URL and enable Connect.
    The handshake selects **World Model** and native **1280 × 720** output.
@@ -86,7 +87,7 @@ promise an A100 frame rate.
     setup = dedent('''\
         # @title Step 2: Install isolated Waypoint runtime and choose storage
         # @markdown Repairs partial environment setup without ensurepip; keeps existing model caches.
-        USE_GOOGLE_DRIVE = False # @param {type:"boolean"}
+        USE_GOOGLE_DRIVE = True # @param {type:"boolean"}
         DRIVE_MODEL_FOLDER = "StreamDiffusion/waypoint-models" # @param {type:"string"}
         # @markdown Optional prompt-to-world pipeline. Both models share one GPU worker; new seeds reset the world.
         ENABLE_PROMPT_SEEDS = False # @param {type:"boolean"}
