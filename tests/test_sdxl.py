@@ -18,6 +18,7 @@ from PIL import Image
 import build_clean_toe as builder
 import colab_launcher
 import colab_server as server
+from colab_setup import turbo_model_files, TINY_VAE_FILES
 import sdxl_stream as xl
 import tensorrt_backend as trt
 import workstation
@@ -56,15 +57,32 @@ class XLChecks(unittest.TestCase):
         diffusion = SimpleNamespace(StableDiffusionXLPipeline=SimpleNamespace(from_pretrained=Mock(return_value=pipe)),
                                    AutoencoderTiny=SimpleNamespace(from_pretrained=Mock(return_value=tiny)))
         core = SimpleNamespace(StreamDiffusion=Mock())
-        with patch.dict(sys.modules, {'diffusers': diffusion, 'streamdiffusion': core}), \
+        with tempfile.TemporaryDirectory(prefix='colab-sd-xl-loader-') as cache, \
+                patch.dict(os.environ, {'HF_HUB_CACHE': cache}), \
+                patch.dict(sys.modules, {'diffusers': diffusion, 'streamdiffusion': core}), \
                 patch.object(torch.cuda, 'is_available', return_value=False):
             xl.SDXLStreamWrapper.load(512, 384)
-        model_call = diffusion.StableDiffusionXLPipeline.from_pretrained.call_args
-        self.assertEqual((model_call.args[0], model_call.kwargs['revision']), (xl.MODEL_ID, xl.MODEL_REVISION))
-        self.assertTrue(model_call.kwargs['use_safetensors'])
-        self.assertEqual(model_call.kwargs['variant'], 'fp16')
-        vae_call = diffusion.AutoencoderTiny.from_pretrained.call_args
-        self.assertEqual((vae_call.args[0], vae_call.kwargs['revision']), (xl.VAE_ID, xl.VAE_REVISION))
+            model_call = diffusion.StableDiffusionXLPipeline.from_pretrained.call_args
+            self.assertEqual((model_call.args[0], model_call.kwargs['revision']), (xl.MODEL_ID, xl.MODEL_REVISION))
+            self.assertTrue(model_call.kwargs['use_safetensors'])
+            self.assertEqual(model_call.kwargs['variant'], 'fp16')
+            vae_call = diffusion.AutoencoderTiny.from_pretrained.call_args
+            self.assertEqual((vae_call.args[0], vae_call.kwargs['revision']), (xl.VAE_ID, xl.VAE_REVISION))
+
+            def save_fixture(repo, revision, files):
+                snapshot = Path(cache).resolve() / ('models--' + repo.replace('/', '--')) / 'snapshots' / revision
+                for name in files:
+                    path = snapshot / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b'cached model fixture')
+                return str(snapshot)
+
+            model_path = save_fixture(xl.MODEL_ID, xl.MODEL_REVISION, turbo_model_files(xl=True, fp16=True))
+            vae_path = save_fixture(xl.VAE_ID, xl.VAE_REVISION, TINY_VAE_FILES)
+            with patch('huggingface_hub.snapshot_download', side_effect=AssertionError('Unexpected Hub request')):
+                xl.SDXLStreamWrapper.load(512, 384)
+            self.assertEqual(diffusion.StableDiffusionXLPipeline.from_pretrained.call_args.args, (model_path,))
+            self.assertEqual(diffusion.AutoencoderTiny.from_pretrained.call_args.args, (vae_path,))
         self.assertIs(pipe.vae, tiny)
         settings = core.StreamDiffusion.call_args.kwargs
         self.assertIsInstance(settings['pipe'], xl.XLStreamPipe)

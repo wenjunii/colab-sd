@@ -1,5 +1,6 @@
 """SDXL-to-Waypoint contracts; no pretrained weights or CUDA installation."""
 import io
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -36,8 +37,10 @@ class XLSeedChecks(unittest.TestCase):
 
     def test_loader_uses_pinned_xl_pipeline_without_loading_sd_or_tiny_vae(self):
         xl, sd = Mock(), Mock()
-        with patch.dict('sys.modules', {'diffusers': SimpleNamespace(
-                StableDiffusionXLPipeline=xl, StableDiffusionPipeline=sd)}):
+        with tempfile.TemporaryDirectory(prefix='colab-sd-xl-seed-loader-') as cache, \
+                patch.dict(os.environ, {'HF_HUB_CACHE': cache}), \
+                patch.dict('sys.modules', {'diffusers': SimpleNamespace(
+                    StableDiffusionXLPipeline=xl, StableDiffusionPipeline=sd)}):
             generator = seeds.PromptSeedGenerator.load('sdxl-turbo')
             settings = xl.from_pretrained.call_args.kwargs
             self.assertEqual(xl.from_pretrained.call_args.args, (seeds.XL_MODEL_ID,))
@@ -86,7 +89,7 @@ class XLSeedChecks(unittest.TestCase):
         world = SimpleNamespace(WorldEngine=Mock(), CtrlInput=Mock())
         with patch.dict('sys.modules', {'world_engine': world, 'gemlite': Mock()}), \
                 patch('waypoint_backend.engine_class_for_profile', return_value=world.WorldEngine), \
-                patch('huggingface_hub.snapshot_download', return_value='pinned/local'), \
+                patch('colab_setup.model_load_source', side_effect=lambda *args, **kwargs: nullcontext('pinned/local')), \
                 patch.object(torch.cuda, 'is_available', return_value=True), \
                 patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)), \
                 patch.object(seeds.PromptSeedGenerator, 'load') as load:

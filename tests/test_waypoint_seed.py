@@ -1,6 +1,7 @@
 """Prompt-to-world scheduling and controls without GPU packages or model downloads."""
 from types import SimpleNamespace
 import asyncio
+from contextlib import nullcontext
 import json
 import threading
 import unittest
@@ -152,7 +153,7 @@ class PromptWorldChecks(unittest.TestCase):
         world = SimpleNamespace(WorldEngine=Mock(), CtrlInput=Mock())
         with patch.dict('sys.modules', {'world_engine': world, 'gemlite': Mock()}), \
                 patch('waypoint_backend.engine_class_for_profile', return_value=world.WorldEngine), \
-                patch('huggingface_hub.snapshot_download', return_value='local/model'), \
+                patch('colab_setup.model_load_source', side_effect=lambda *args, **kwargs: nullcontext('local/model')), \
                 patch.object(torch.cuda, 'is_available', return_value=True), \
                 patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)), \
                 patch.object(PromptSeedGenerator, 'load') as load_seed:

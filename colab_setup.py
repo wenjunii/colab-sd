@@ -1,4 +1,5 @@
 """Colab setup source embedded into the generated notebook."""
+from contextlib import contextmanager
 import os
 import json
 import importlib.metadata
@@ -21,6 +22,11 @@ CORE_DEPENDENCIES = (
 )
 DEFAULT_DRIVE_MODEL_FOLDER = 'StreamDiffusion/models'
 MODEL_CACHE_VARIABLES = ('HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'TRANSFORMERS_CACHE')
+SD_TURBO = ('stabilityai/sd-turbo', 'b261bac6fd2cf515557d5d0707481eafa0485ec2')
+SDXL_TURBO = ('stabilityai/sdxl-turbo', '71153311d3dbb46851df1931d3ca6e939de83304')
+TAESD = ('madebyollin/taesd', '614f76814bbe30edbe2e627ace1c2234c81a2c0e')
+TAESDXL = ('madebyollin/taesdxl', 'b20258aaef75ef61e659c1e0f14f251cf0ad153e')
+TINY_VAE_FILES = ('config.json', 'diffusion_pytorch_model.safetensors')
 
 
 def pip_cache_arguments(default_no_cache=True):
@@ -36,20 +42,9 @@ def model_cache_arguments():
     return {'cache_dir': cache} if cache else {}
 
 
-def cached_model_snapshot(repo, revision, files):
-    """Check every required pinned file locally before making any Hub request.
-
-    Size checks select an existing snapshot; staging still validates its hashes.
-    This does not change or delete existing models, snapshots or credentials.
-    """
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or not re.fullmatch(r'[a-f0-9]{40}', revision):
-        raise ValueError('Local model reuse requires a pinned repository/revision')
-    cache = Path(os.environ.get('HF_HUB_CACHE', Path.home() / '.cache/huggingface/hub')).expanduser().resolve()
-    snapshot = cache / ('models--' + repo.replace('/', '--')) / 'snapshots' / revision
-    if not snapshot.is_dir():
-        print(f'[models] {repo}: pinned snapshot not cached at {snapshot}; missing files will be fetched.', flush=True)
-        return None
+def _resolve_snapshot_files(snapshot, repo, revision, files):
     from krea_weights import InvalidCheckpoint, resolve_cached_file
+    resolved = {}
     total = 0
     missing = []
     entries = files.items() if isinstance(files, dict) else ((name, None) for name in files)
@@ -63,14 +58,92 @@ def cached_model_snapshot(repo, revision, files):
             if (not candidate.is_file() or (expected is None and size == 0)
                     or (expected is not None and size != expected[0])):
                 raise InvalidCheckpoint('missing or wrong-sized cached file')
+            resolved[name] = candidate
             total += size
         except (OSError, InvalidCheckpoint):
             missing.append(name)
+    return resolved, missing, total
+
+
+def _cached_model_files(repo, revision, files):
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or not re.fullmatch(r'[a-f0-9]{40}', revision):
+        raise ValueError('Local model reuse requires a pinned repository/revision')
+    cache = os.environ.get('HF_HUB_CACHE') or os.environ.get('HUGGINGFACE_HUB_CACHE')
+    if not cache:
+        default_home = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'huggingface'
+        cache = Path(os.environ.get('HF_HOME') or default_home) / 'hub'
+    snapshot = Path(cache).expanduser().resolve() / ('models--' + repo.replace('/', '--')) / 'snapshots' / revision
+    if not snapshot.is_dir():
+        print(f'[models] {repo}: pinned snapshot not cached at {snapshot}; using the normal download path.', flush=True)
+        return None
+    resolved, missing, total = _resolve_snapshot_files(snapshot, repo, revision, files)
     if missing:
         print(f'[models] {repo}: {len(missing)} required file(s) missing/incomplete; existing cached files are kept.', flush=True)
         return None
     print(f'[models] Reusing {repo} from {snapshot} ({total / 1024**3:.2f} GiB); no Hub download requested.', flush=True)
-    return str(snapshot)
+    return snapshot, resolved
+
+
+def cached_model_snapshot(repo, revision, files):
+    """Find a complete pinned snapshot for loaders that stage and validate its files."""
+    found = _cached_model_files(repo, revision, files)
+    return str(found[0]) if found is not None else None
+
+
+@contextmanager
+def model_load_source(repo, revision, files, *, download=False):
+    """Give eager loaders a readable directory or let them fetch absent snapshots."""
+    cached = _cached_model_files(repo, revision, files)
+    if cached is not None:
+        snapshot, resolved = cached
+    elif download:
+        from huggingface_hub import snapshot_download
+        snapshot = Path(snapshot_download(repo, revision=revision, allow_patterns=list(files),
+                                          **model_cache_arguments())).resolve()
+        resolved, missing, _ = _resolve_snapshot_files(snapshot, repo, revision, files)
+        if missing:
+            raise RuntimeError(f'{repo} snapshot is incomplete or unreadable: {", ".join(missing)}. '
+                               'Check the configured model cache and Drive mount.')
+    else:
+        yield repo
+        return
+
+    # Native symlinks already point to the payload. An older Drive text link
+    # is a regular file with a blob path as its contents, so eager loaders
+    # need a readable directory with the same filenames.
+    if all((snapshot / name).resolve() == source for name, source in resolved.items()):
+        yield str(snapshot)
+        return
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(prefix='bridge-model-view-', dir=temp_root) as directory:
+        view = Path(directory).resolve()
+        if view.parent != temp_root:
+            raise RuntimeError('Model view resolved outside its temporary directory')
+        for name, source in resolved.items():
+            link = view / name
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                link.symlink_to(source)
+            except OSError as exc:
+                raise RuntimeError(f'Unable to link the older Drive cache for {repo}. '
+                                   'Load it on Colab or use a workstation cache with regular model files.') from exc
+        print(f'[models] Opened readable links for {repo}; loading from the existing cache.', flush=True)
+        yield str(view)
+
+
+def turbo_model_files(*, xl=False, fp16=False):
+    """Files used by the pinned Turbo pipelines and their text encoders."""
+    variant = '.fp16' if fp16 else ''
+    files = ['model_index.json', 'scheduler/scheduler_config.json']
+    for component in ('unet', 'vae'):
+        files.extend((f'{component}/config.json', f'{component}/diffusion_pytorch_model{variant}.safetensors'))
+    encoder_suffixes = ('', '_2') if xl else ('',)
+    for suffix in encoder_suffixes:
+        encoder, tokenizer = 'text_encoder' + suffix, 'tokenizer' + suffix
+        files.extend((f'{encoder}/config.json', f'{encoder}/model{variant}.safetensors'))
+        files.extend(f'{tokenizer}/{name}' for name in ('special_tokens_map.json', 'tokenizer_config.json',
+                                                       'vocab.json', 'merges.txt'))
+    return files
 
 
 def core_packages_ready(root):

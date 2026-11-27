@@ -39,8 +39,10 @@ def changed_paths(root=Path('.')):
     # checkout@v7 leaves a PR merge commit at HEAD. Its first parent is the
     # target branch, so this includes the full PR, not just the last PR commit.
     # Disable rename detection to classify both sides of moved/deleted files.
+    # Pass the environment explicitly so empty Git config values survive on Windows.
     result = subprocess.run(['git', 'diff', '--no-renames', '--name-only', '-z', 'HEAD^1', 'HEAD'],
-                            cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            cwd=root, env=os.environ.copy(), check=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return [os.fsdecode(name) for name in result.stdout.split(b'\0') if name]
 
 
