@@ -2,11 +2,10 @@
 from collections import OrderedDict
 
 import numpy as np
+from colab_setup import SD_TURBO, SDXL_TURBO, model_load_source, turbo_model_files
 
-MODEL_ID = 'stabilityai/sd-turbo'
-MODEL_REVISION = 'b261bac6fd2cf515557d5d0707481eafa0485ec2'
-XL_MODEL_ID = 'stabilityai/sdxl-turbo'
-XL_MODEL_REVISION = '71153311d3dbb46851df1931d3ca6e939de83304'
+MODEL_ID, MODEL_REVISION = SD_TURBO
+XL_MODEL_ID, XL_MODEL_REVISION = SDXL_TURBO
 SEED_MODELS = {'sd-turbo': (MODEL_ID, MODEL_REVISION, 'SD-Turbo'),
                'sdxl-turbo': (XL_MODEL_ID, XL_MODEL_REVISION, 'SDXL-Turbo')}
 SEED_SIZE = (768, 432)
@@ -32,9 +31,10 @@ class PromptSeedGenerator:
             from diffusers import StableDiffusionPipeline as pipeline_type
             options = {'safety_checker': None}
         model_id, revision, _ = SEED_MODELS[model]
-        pipe = pipeline_type.from_pretrained(
-            model_id, revision=revision, variant='fp16',
-            torch_dtype=torch.float16, use_safetensors=True, **options)
+        with model_load_source(model_id, revision, turbo_model_files(xl=model == 'sdxl-turbo', fp16=True)) as source:
+            pipe = pipeline_type.from_pretrained(
+                source, revision=revision, variant='fp16',
+                torch_dtype=torch.float16, use_safetensors=True, **options)
         pipe.to('cuda')
         pipe.set_progress_bar_config(disable=True)
         return cls(pipe, torch, model)

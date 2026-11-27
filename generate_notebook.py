@@ -10,9 +10,10 @@ PROJECT_DIR = Path(__file__).resolve().parent
 STREAMING_GUIDE = """
 ## What Google Drive preserves
 Drive storage defaults **On** in all four notebooks. Authorize the mount and keep
-the same `DRIVE_MODEL_FOLDER` on later sessions. Complete pinned Waypoint/Krea/LTX
-snapshots are checked locally before any Hub request; missing files download into
-that folder. StreamDiffusion also reuses its Hub cache but may check remote metadata.
+the same `DRIVE_MODEL_FOLDER` on later sessions. With the expected model files in
+the cache, each backend opens local paths before requesting downloads. SD/SDXL
+and Waypoint can open older Drive cache links without copying the weights. Missing
+files use the backend's normal download path.
 Package downloads are cached separately under the model folder's parent at
 `.bridge-packages/pip-cache` (shared by the four default folders). Allow several
 additional GB in Drive for compatible package downloads.
@@ -123,6 +124,7 @@ Server and tunnel logs are saved in `bridge_logs/` inside the Colab runtime.
         ('tensorrt_code', 'tensorrt_backend.py', 'tensorrt_backend.py'),
         ('sdxl_code', 'sdxl_stream.py', 'sdxl_stream.py'),
         ('setup_code', 'colab_setup.py', 'colab_setup.py'),
+        ('weights_code', 'krea_weights.py', 'krea_weights.py'),
     ):
         write_server += variable + ' = ' + json.dumps((root / source_name).read_text(encoding='utf-8')) + '\n'
         write_server += f"with open({target_name!r}, 'w', encoding='utf-8') as handle:\n    handle.write({variable})\n"

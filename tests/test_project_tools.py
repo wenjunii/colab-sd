@@ -82,11 +82,13 @@ class ProjectToolsChecks(unittest.TestCase):
                        for node in ast.parse(''.join(notebook['cells'][3]['source'])).body
                        if isinstance(node, ast.Assign)}
         for variable, filename in (('server_code', 'colab_server.py'), ('protocol_code', 'bridge_protocol.py'),
-                                   ('launcher_code', 'colab_launcher.py'), ('tensorrt_code', 'tensorrt_backend.py')):
+                                   ('launcher_code', 'colab_launcher.py'), ('tensorrt_code', 'tensorrt_backend.py'),
+                                   ('weights_code', 'krea_weights.py')):
             self.assertEqual(assignments[variable], (generate_notebook.PROJECT_DIR / filename).read_text(encoding='utf-8'))
 
     def test_notebook_check_detects_source_drift(self):
-        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py', 'tensorrt_backend.py', 'sdxl_stream.py', 'webrtc_transport.py'):
+        for filename in ('colab_server.py', 'colab_setup.py', 'colab_launcher.py', 'bridge_protocol.py',
+                         'tensorrt_backend.py', 'sdxl_stream.py', 'webrtc_transport.py', 'krea_weights.py'):
             (self.root / filename).write_text('# initial source\n')
         generate_notebook.generate_notebook(self.root)
         generate_notebook.generate_notebook(self.root, check=True)
@@ -237,7 +239,7 @@ class ProjectToolsChecks(unittest.TestCase):
 
     def test_tooling_tests_are_not_excluded_by_gitignore(self):
         result = subprocess.run(['git', 'check-ignore', '--no-index', '--quiet', 'tests/test_project_tools.py'],
-                                cwd=generate_notebook.PROJECT_DIR, capture_output=True)
+                                cwd=generate_notebook.PROJECT_DIR, env=os.environ.copy(), capture_output=True)
         if result.returncode == 128:
             self.skipTest('A Git checkout is needed to check ignore rules')
         self.assertEqual(result.returncode, 1, 'The build-and-sync tests must be included in GitHub sync')

@@ -1,10 +1,14 @@
 """World-model contract checks using a CPU fake, never downloading GPU packages/weights."""
 import ast
 import asyncio
+from contextlib import nullcontext
+import hashlib
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
@@ -88,18 +92,60 @@ class WaypointChecks(unittest.TestCase):
             backend.set_seed_image(seed_jpeg())
         self.assertFalse(backend.can_generate)
 
-    def test_loader_pins_both_models_and_selects_a100_compatible_quantization(self):
-        world = SimpleNamespace(WorldEngine=Mock(), CtrlInput=Mock())
-        with patch.dict('sys.modules', {'world_engine': world, 'gemlite': Mock()}), \
+    def test_loader_pins_both_models_and_opens_legacy_drive_links_on_first_load_and_restart(self):
+        payloads = {'config.yaml': b'fixture: valid\n', 'model.safetensors': b'waypoint weight fixture',
+                    'taehv1_5.pth': b'vae weight fixture'}
+        payload_paths, cache_entries, views = {}, {}, []
+
+        def download_assets(repo, *, revision, allow_patterns, cache_dir):
+            repo_dir = Path(cache_dir) / ('models--' + repo.replace('/', '--'))
+            snapshot = repo_dir / 'snapshots' / revision
+            blobs = repo_dir / 'blobs'
+            snapshot.mkdir(parents=True)
+            blobs.mkdir()
+            for name in allow_patterns:
+                digest = hashlib.sha256(payloads[name]).hexdigest()
+                blob = blobs / digest
+                blob.write_bytes(payloads[name])
+                entry = snapshot / name
+                entry.write_text(f'../../blobs/{digest}', encoding='ascii')
+                payload_paths[name], cache_entries[name] = blob, entry
+            return str(snapshot)
+
+        def construct(model, *, model_config_overrides, **kwargs):
+            model, vae = Path(model), Path(model_config_overrides['ae_uri'])
+            views.extend((model, vae))
+            for name, payload in payloads.items():
+                path = (vae if name.endswith('.pth') else model) / name
+                self.assertEqual(path.read_bytes(), payload)
+                self.assertTrue(path.samefile(payload_paths[name]))
+            return Mock()
+
+        world = SimpleNamespace(WorldEngine=Mock(side_effect=construct), CtrlInput=Mock())
+        with tempfile.TemporaryDirectory(prefix='colab-sd-waypoint-cache-') as directory, \
+                patch.dict(os.environ, {'HF_HUB_CACHE': directory}), \
+                patch.dict('sys.modules', {'world_engine': world, 'gemlite': Mock()}), \
                 patch('waypoint_backend.engine_class_for_profile', return_value=world.WorldEngine), \
-                patch('huggingface_hub.snapshot_download', side_effect=['local/model', 'local/vae']) as download, \
+                patch('huggingface_hub.snapshot_download', side_effect=download_assets) as download, \
                 patch.object(torch.cuda, 'is_available', return_value=True), \
                 patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)):
-            WaypointBackend.load('intw8a8')
+            try:
+                WaypointBackend.load('intw8a8')
+            except RuntimeError as exc:
+                if getattr(exc.__cause__, 'winerror', None) == 1314:
+                    self.skipTest('Windows does not allow this process to create symbolic links')
+                raise
             self.assertEqual([call.kwargs['revision'] for call in download.call_args_list],
                              [MODEL_REVISION, VAE_REVISION])
+            download.side_effect = AssertionError('Complete Drive cache should be used without a Hub request')
+            WaypointBackend.load('intw8a8')
+            self.assertEqual(download.call_count, 2)
             self.assertEqual(world.WorldEngine.call_args.kwargs['quant'], 'intw8a8')
-            self.assertEqual(world.WorldEngine.call_args.kwargs['model_config_overrides'], {'ae_uri': 'local/vae'})
+            self.assertEqual(len(views), 4)
+            self.assertTrue(all(not view.exists() for view in views))
+            for name, entry in cache_entries.items():
+                self.assertTrue(entry.read_text(encoding='ascii').startswith('../../blobs/'))
+                self.assertEqual(payload_paths[name].read_bytes(), payloads[name])
             with self.assertRaises(ValueError):
                 WaypointBackend.load('fp8w8a8')
 
@@ -124,7 +170,7 @@ class WaypointChecks(unittest.TestCase):
                 gemlite = SimpleNamespace(set_autotune=Mock(side_effect=select))
                 with patch.dict('sys.modules', {'world_engine': world, 'gemlite': gemlite}), \
                         patch('waypoint_backend.engine_class_for_profile', return_value=world.WorldEngine), \
-                        patch('huggingface_hub.snapshot_download', return_value='local/model'), \
+                        patch('colab_setup.model_load_source', side_effect=lambda *args, **kwargs: nullcontext('local/model')), \
                         patch.object(torch.cuda, 'is_available', return_value=True), \
                         patch.object(torch.cuda, 'get_device_capability', return_value=(8, 0)):
                     backend = WaypointBackend.load(quant, profile)

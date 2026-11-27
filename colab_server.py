@@ -566,21 +566,29 @@ def compress_frame(arr_bgr, max_bytes=None, allow_oversize=False):
     raise ValueError("Could not encode an output JPEG within the frame byte budget")
 
 
+def create_sd_pipeline(timesteps, mode):
+    from colab_setup import SD_TURBO, TAESD, TINY_VAE_FILES, model_load_source, turbo_model_files
+
+    # StreamDiffusion's bundled TensorRT/Polygraphy path targets old CUDA 11/12
+    # runtimes. Load the native models, then compile their UNets explicitly.
+    with model_load_source(*SD_TURBO, turbo_model_files()) as model, \
+            model_load_source(*TAESD, TINY_VAE_FILES) as vae:
+        return StreamDiffusionWrapper(
+            model_id_or_path=model, vae_id=vae,
+            t_index_list=timesteps, frame_buffer_size=1,
+            width=output_width, height=output_height, warmup=5,
+            acceleration="none", mode=mode,
+            use_lcm_lora=False, use_tiny_vae=True, cfg_type="none",
+            use_denoising_batch=True,
+            device="cuda" if torch.cuda.is_available() else "cpu", seed=current_seed,
+        )
+
+
 def create_txt2img_pipeline():
     if diffusion_model == 'sdxl-turbo':
         from sdxl_stream import SDXLStreamWrapper
         return SDXLStreamWrapper.load(output_width, output_height)
-    # StreamDiffusion's bundled TensorRT/Polygraphy path targets old CUDA 11/12
-    # runtimes. Load the native models, then compile their UNets explicitly.
-    return StreamDiffusionWrapper(
-        model_id_or_path="stabilityai/sd-turbo",
-        t_index_list=[0], frame_buffer_size=1,
-        width=output_width, height=output_height, warmup=5,
-        acceleration="none", mode="txt2img",
-        use_lcm_lora=False, use_tiny_vae=True, cfg_type="none",
-        use_denoising_batch=True,
-        device="cuda" if torch.cuda.is_available() else "cpu", seed=current_seed,
-    )
+    return create_sd_pipeline([0], 'txt2img')
 
 
 def load_pipeline():
@@ -689,22 +697,7 @@ def load_pipeline():
         if diffusion_model == 'sdxl-turbo':
             raise RuntimeError('SDXL img2img initialization failed; no other model was substituted') from e
         print(">>> Fallback to standalone img2img wrapper:", e)
-        stream_img2img = StreamDiffusionWrapper(
-            model_id_or_path="stabilityai/sd-turbo",
-            t_index_list=[t0_init, 45],
-            frame_buffer_size=1,
-            width=output_width,
-            height=output_height,
-            warmup=5,
-            acceleration="none",
-            mode="img2img",
-            use_lcm_lora=False,
-            use_tiny_vae=True,
-            cfg_type="none",
-            use_denoising_batch=True,
-            device=device,
-            seed=current_seed,
-        )
+        stream_img2img = create_sd_pipeline([t0_init, 45], 'img2img')
         img2img_engine = "PyTorch (FP16)"
 
     print(">>> Preparing both pipelines with initial prompt...")

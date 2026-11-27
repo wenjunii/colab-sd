@@ -2,11 +2,10 @@
 from types import SimpleNamespace
 
 import torch
+from colab_setup import SDXL_TURBO, TAESDXL, TINY_VAE_FILES, model_load_source, turbo_model_files
 
-MODEL_ID = 'stabilityai/sdxl-turbo'
-MODEL_REVISION = '71153311d3dbb46851df1931d3ca6e939de83304'
-VAE_ID = 'madebyollin/taesdxl'
-VAE_REVISION = 'b20258aaef75ef61e659c1e0f14f251cf0ad153e'
+MODEL_ID, MODEL_REVISION = SDXL_TURBO
+VAE_ID, VAE_REVISION = TAESDXL
 
 
 class XLConditionedUNet:
@@ -65,12 +64,14 @@ class SDXLStreamWrapper:
         from streamdiffusion import StreamDiffusion
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         dtype = torch.float16 if device == 'cuda' else torch.float32
-        pipe = StableDiffusionXLPipeline.from_pretrained(
-            MODEL_ID, revision=MODEL_REVISION, variant='fp16', torch_dtype=dtype,
-            use_safetensors=True, add_watermarker=False)
+        with model_load_source(MODEL_ID, MODEL_REVISION, turbo_model_files(xl=True, fp16=True)) as source:
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                source, revision=MODEL_REVISION, variant='fp16', torch_dtype=dtype,
+                use_safetensors=True, add_watermarker=False)
         # SDXL needs its own TinyVAE. Replace the original before moving to GPU.
-        pipe.vae = AutoencoderTiny.from_pretrained(VAE_ID, revision=VAE_REVISION,
-                                                  torch_dtype=dtype, use_safetensors=True)
+        with model_load_source(VAE_ID, VAE_REVISION, TINY_VAE_FILES) as source:
+            pipe.vae = AutoencoderTiny.from_pretrained(source, revision=VAE_REVISION,
+                                                      torch_dtype=dtype, use_safetensors=True)
         pipe.to(device=device, dtype=dtype)
         pipe.set_progress_bar_config(disable=True)
         stream = StreamDiffusion(pipe=XLStreamPipe(pipe, width, height), t_index_list=[0],
